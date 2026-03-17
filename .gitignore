@@ -1,0 +1,28 @@
+# Binary
+/stash
+dist/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database (local dev)
+*.db
+*.db-wal
+*.db-shm

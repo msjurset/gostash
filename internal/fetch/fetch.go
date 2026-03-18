@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,7 +24,16 @@ type Result struct {
 func URL(rawURL string) (*Result, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	resp, err := client.Get(rawURL)
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	// Many sites serve server-rendered HTML to recognized browsers/bots
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
@@ -48,7 +58,8 @@ func URL(rawURL string) (*Result, error) {
 
 	// Extract readable text from HTML
 	if strings.Contains(ct, "html") {
-		article, err := readability.FromReader(strings.NewReader(string(body)), nil)
+		parsed, _ := url.Parse(rawURL)
+		article, err := readability.FromReader(strings.NewReader(string(body)), parsed)
 		if err == nil {
 			result.Title = article.Title
 			result.ExtractedText = article.TextContent

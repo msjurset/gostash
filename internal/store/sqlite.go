@@ -99,7 +99,13 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 
 // GetItem fetches a single item by ID with its tags and collections.
 func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*model.Item, error) {
-	item, err := s.scanItem(s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE id = ?`, id))
+	// Try exact match first, then prefix match for short IDs
+	row := s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE id = ?`, id)
+	item, err := s.scanItem(row)
+	if err == sql.ErrNoRows && len(id) >= 6 {
+		row = s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE id LIKE ?`, id+"%")
+		item, err = s.scanItem(row)
+	}
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("item not found: %s", id)
 	}

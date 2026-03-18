@@ -37,6 +37,7 @@ func Run(r io.Reader, mimeType string) (*Result, error) {
 }
 
 func init() {
+	Register(&EmailExtractor{})
 	Register(&PDFExtractor{})
 	Register(&DocxExtractor{})
 	Register(&ImageExtractor{})

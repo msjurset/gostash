@@ -41,13 +41,13 @@ _stash() {
                 '--note=[Note]:note:' \
                 '-c+[Collection]:collection:' \
                 '--collection=[Collection]:collection:' \
-                '--type=[Force type]:type:(link snippet file image)' \
+                '--type=[Force type]:type:(link snippet file image email)' \
                 '1:source:_files'
             ;;
         search)
             _arguments \
                 '(- *)--help[Show help]' \
-                '--type=[Filter by type]:type:(link snippet file image)' \
+                '--type=[Filter by type]:type:(link snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \
@@ -59,7 +59,7 @@ _stash() {
         list)
             _arguments \
                 '(- *)--help[Show help]' \
-                '--type=[Filter by type]:type:(link snippet file image)' \
+                '--type=[Filter by type]:type:(link snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \

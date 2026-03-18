@@ -21,6 +21,7 @@ var rootCmd = &cobra.Command{
 	Short:   "Personal knowledge vault",
 	Long:    "Capture, organize, and search anything — links, text snippets, files, images.",
 	Version: version,
+	RunE:    runTUI,
 }
 
 func init() {

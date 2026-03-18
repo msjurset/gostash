@@ -13,6 +13,7 @@ const (
 	TypeSnippet ItemType = "snippet"
 	TypeFile    ItemType = "file"
 	TypeImage   ItemType = "image"
+	TypeEmail   ItemType = "email"
 )
 
 // Item is the core domain entity.

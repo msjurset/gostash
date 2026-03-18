@@ -41,6 +41,8 @@ func SuggestTags(mimeType string) []string {
 		return []string{"docx", "document"}
 	case strings.Contains(mimeType, "html"):
 		return []string{"web"}
+	case mimeType == MIMEEmail:
+		return []string{"email"}
 	default:
 		return nil
 	}
@@ -65,6 +67,8 @@ func mimeFromExt(ext string) string {
 		return MIMEWebP
 	case ".docx":
 		return MIMEDocx
+	case ".eml":
+		return MIMEEmail
 	default:
 		return "application/octet-stream"
 	}

@@ -52,6 +52,10 @@ var (
 			Foreground(lipgloss.Color("213")).
 			Bold(true)
 
+	emailStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("222")).
+			Bold(true)
+
 	detailLabel = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("62")).
 			Bold(true)

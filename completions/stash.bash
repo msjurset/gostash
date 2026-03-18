@@ -19,7 +19,7 @@ _stash() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--title -t --tag -T --note -n --collection -c --type --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image" -- "$cur"))
+            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
         else
             COMPREPLY=($(compgen -f -- "$cur"))
         fi
@@ -28,14 +28,14 @@ _stash() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image" -- "$cur"))
+            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
         fi
         ;;
     list)
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image" -- "$cur"))
+            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
         fi
         ;;
     edit)

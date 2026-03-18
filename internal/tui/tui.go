@@ -112,9 +112,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Global keys
-	switch {
-	case key.Matches(msg, keys.Quit):
+	// ctrl+c always quits
+	if key.Matches(msg, keys.ForceQuit) {
 		return m, tea.Quit
 	}
 
@@ -124,7 +123,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Enter):
 			m.searching = false
 			m.search.Blur()
-			m.filter.Query = m.search.Value()
+			m.parseSearch(m.search.Value())
 			return m, m.fetchItems()
 		case key.Matches(msg, keys.Escape):
 			m.searching = false
@@ -140,7 +139,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Detail view
 	if m.activeView == viewDetail {
 		switch {
-		case key.Matches(msg, keys.Escape), key.Matches(msg, keys.Back):
+		case key.Matches(msg, keys.Escape), key.Matches(msg, keys.Quit):
 			m.activeView = viewList
 			return m, nil
 		default:
@@ -152,6 +151,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// List view
 	switch {
+	case key.Matches(msg, keys.Quit):
+		return m, tea.Quit
 	case key.Matches(msg, keys.Up):
 		if m.cursor > 0 {
 			m.cursor--
@@ -188,11 +189,28 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.toggleTypeFilter(model.TypeFile)
 	case key.Matches(msg, keys.FilterImage):
 		return m, m.toggleTypeFilter(model.TypeImage)
+	case key.Matches(msg, keys.FilterEmail):
+		return m, m.toggleTypeFilter(model.TypeEmail)
 	case key.Matches(msg, keys.Refresh):
 		return m, m.fetchItems()
 	}
 
 	return m, nil
+}
+
+func (m *Model) parseSearch(input string) {
+	m.filter.Query = ""
+	m.filter.Tags = nil
+	for _, token := range strings.Fields(input) {
+		if after, ok := strings.CutPrefix(token, "tag:"); ok {
+			m.filter.Tags = append(m.filter.Tags, after)
+		} else {
+			if m.filter.Query != "" {
+				m.filter.Query += " "
+			}
+			m.filter.Query += token
+		}
+	}
 }
 
 func (m *Model) toggleTypeFilter(t model.ItemType) tea.Cmd {
@@ -252,9 +270,12 @@ func (m Model) viewList() string {
 		b.WriteString("  " + query)
 	}
 
-	// Active filter indicator
+	// Active filter indicators
 	if m.filter.Type != "" {
 		b.WriteString("  " + filterStyle.Render(string(m.filter.Type)))
+	}
+	for _, tag := range m.filter.Tags {
+		b.WriteString("  " + tagStyle.Render("tag:"+tag))
 	}
 	b.WriteString("\n")
 
@@ -303,7 +324,7 @@ func (m Model) viewDetail() string {
 
 func (m Model) statusBar() string {
 	left := fmt.Sprintf(" %d items", len(m.items))
-	right := " /:search  1-4:filter  r:refresh  enter:detail  q:quit "
+	right := " /:search  1-5:filter  r:refresh  enter:detail  q:quit "
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
 		gap = 0
@@ -360,6 +381,8 @@ func typeIcon(t model.ItemType) string {
 		return fileStyle.Render("FIL")
 	case model.TypeImage:
 		return imageStyle.Render("IMG")
+	case model.TypeEmail:
+		return emailStyle.Render("EML")
 	default:
 		return "???"
 	}

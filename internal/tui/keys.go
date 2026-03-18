@@ -7,8 +7,8 @@ type keyMap struct {
 	Down          key.Binding
 	Enter         key.Binding
 	Escape        key.Binding
-	Back          key.Binding
 	Quit          key.Binding
+	ForceQuit     key.Binding
 	Search        key.Binding
 	Clear         key.Binding
 	Refresh       key.Binding
@@ -16,6 +16,7 @@ type keyMap struct {
 	FilterSnippet key.Binding
 	FilterFile    key.Binding
 	FilterImage   key.Binding
+	FilterEmail   key.Binding
 }
 
 var keys = keyMap{
@@ -35,13 +36,13 @@ var keys = keyMap{
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back/cancel"),
 	),
-	Back: key.NewBinding(
-		key.WithKeys("q"),
-		key.WithHelp("q", "back"),
-	),
 	Quit: key.NewBinding(
+		key.WithKeys("q"),
+		key.WithHelp("q", "quit/back"),
+	),
+	ForceQuit: key.NewBinding(
 		key.WithKeys("ctrl+c"),
-		key.WithHelp("ctrl+c", "quit"),
+		key.WithHelp("ctrl+c", "force quit"),
 	),
 	Search: key.NewBinding(
 		key.WithKeys("/"),
@@ -70,5 +71,9 @@ var keys = keyMap{
 	FilterImage: key.NewBinding(
 		key.WithKeys("4"),
 		key.WithHelp("4", "images"),
+	),
+	FilterEmail: key.NewBinding(
+		key.WithKeys("5"),
+		key.WithHelp("5", "emails"),
 	),
 }

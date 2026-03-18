@@ -39,7 +39,7 @@ func init() {
 	addCmd.Flags().StringSliceP("tag", "T", nil, "Tags (repeatable)")
 	addCmd.Flags().StringP("note", "n", "", "Note to attach")
 	addCmd.Flags().StringP("collection", "c", "", "Add to collection")
-	addCmd.Flags().String("type", "", "Force type (link, snippet, file, image)")
+	addCmd.Flags().String("type", "", "Force type (link, snippet, file, image, email)")
 	rootCmd.AddCommand(addCmd)
 }
 
@@ -204,9 +204,12 @@ func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 	item.MimeType = mimeType
 	item.SourcePath = absPath
 
-	if strings.HasPrefix(mimeType, "image/") {
+	switch {
+	case mimeType == extract.MIMEEmail:
+		item.Type = model.TypeEmail
+	case strings.HasPrefix(mimeType, "image/"):
 		item.Type = model.TypeImage
-	} else {
+	default:
 		item.Type = model.TypeFile
 	}
 
@@ -252,7 +255,7 @@ func inferTitle(source string, itemType model.ItemType) string {
 	switch itemType {
 	case model.TypeLink:
 		return source
-	case model.TypeFile, model.TypeImage:
+	case model.TypeFile, model.TypeImage, model.TypeEmail:
 		return filepath.Base(source)
 	default:
 		return "Untitled snippet"

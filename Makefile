@@ -5,7 +5,7 @@ GOFLAGS = -trimpath
 
 PLATFORMS = linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: build test clean release install
+.PHONY: build test clean release deploy install-completion
 
 build:
 	go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/stash
@@ -30,11 +30,11 @@ release: clean test
 			-C .. completions/; \
 	done
 
-install: build
-	cp $(BINARY) $(GOPATH)/bin/$(BINARY) 2>/dev/null || cp $(BINARY) ~/go/bin/$(BINARY)
+deploy: build install-completion
+	cp $(BINARY) ~/.local/bin/
 
 install-completion:
-	install -d $(DESTDIR)/usr/local/share/bash-completion/completions
-	install -m 644 completions/stash.bash $(DESTDIR)/usr/local/share/bash-completion/completions/stash
-	install -d $(DESTDIR)/usr/local/share/zsh/site-functions
-	install -m 644 completions/stash.zsh $(DESTDIR)/usr/local/share/zsh/site-functions/_stash
+	install -d ~/.oh-my-zsh/custom/completions
+	install -m 644 completions/stash.zsh ~/.oh-my-zsh/custom/completions/_stash
+	@echo "Refreshing zsh completions..."
+	@zsh -c 'autoload -U compinit && rm -f ~/.zcompdump* && compinit' 2>/dev/null || true

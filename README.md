@@ -15,6 +15,14 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install msjurset/tap/stash
+```
+
+This installs the binary, man page, and shell completions.
+
 ### From source
 
 ```sh

@@ -5,9 +5,12 @@ GOFLAGS = -trimpath
 
 PLATFORMS = linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: build test clean release deploy install-completion
+.PHONY: build test clean release deploy generate install-completion install-manpage
 
-build:
+generate:
+	go generate ./internal/manpage/
+
+build: generate
 	go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/stash
 
 test:
@@ -19,6 +22,7 @@ clean:
 
 release: clean test
 	@mkdir -p dist
+	cp stash.1 dist/
 	@for platform in $(PLATFORMS); do \
 		OS=$${platform%/*}; \
 		ARCH=$${platform#*/}; \
@@ -26,12 +30,18 @@ release: clean test
 		GOOS=$$OS GOARCH=$$ARCH go build $(GOFLAGS) $(LDFLAGS) \
 			-o dist/$(BINARY)-$$OS-$$ARCH ./cmd/stash; \
 		tar czf dist/$(BINARY)-$$OS-$$ARCH.tar.gz \
-			-C dist $(BINARY)-$$OS-$$ARCH \
+			-C dist $(BINARY)-$$OS-$$ARCH stash.1 \
 			-C .. completions/; \
+		rm dist/$(BINARY)-$$OS-$$ARCH; \
 	done
+	rm dist/stash.1
 
-deploy: build install-completion
+deploy: build install-manpage install-completion
 	cp $(BINARY) ~/.local/bin/
+
+install-manpage:
+	install -d /usr/local/share/man/man1
+	install -m 644 stash.1 /usr/local/share/man/man1/stash.1
 
 install-completion:
 	install -d ~/.oh-my-zsh/custom/completions

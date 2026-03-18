@@ -17,6 +17,7 @@ var editCmd = &cobra.Command{
 func init() {
 	editCmd.Flags().StringP("title", "t", "", "New title")
 	editCmd.Flags().StringP("note", "n", "", "New note")
+	editCmd.Flags().StringP("extracted-text", "e", "", "Set extracted text")
 	editCmd.Flags().StringSlice("add-tag", nil, "Add tags (repeatable)")
 	editCmd.Flags().StringSlice("remove-tag", nil, "Remove tags (repeatable)")
 	editCmd.Flags().StringP("collection", "c", "", "Add to collection")
@@ -43,6 +44,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("note") {
 		item.Notes, _ = cmd.Flags().GetString("note")
+	}
+	if cmd.Flags().Changed("extracted-text") {
+		item.ExtractedText, _ = cmd.Flags().GetString("extracted-text")
 	}
 
 	if err := s.UpdateItem(ctx, item); err != nil {

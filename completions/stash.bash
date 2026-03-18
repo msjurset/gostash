@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open tag collection ui help"
+    local commands="add search list show edit delete open tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -40,7 +40,7 @@ _stash() {
         ;;
     edit)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--title -t --note -n --add-tag --remove-tag --collection -c --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title -t --note -n --extracted-text -e --add-tag --remove-tag --collection -c --help" -- "$cur"))
         fi
         ;;
     delete)

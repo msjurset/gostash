@@ -13,6 +13,7 @@ _stash() {
         'tag:Manage tags'
         'collection:Manage collections'
         'ui:Interactive TUI for browsing and searching'
+        'man:Display the stash manual page'
         'help:Help about any command'
     )
 
@@ -67,9 +68,24 @@ _stash() {
                 '-l+[Max results]:limit:' \
                 '--limit=[Max results]:limit:'
             ;;
-        show|delete|edit|open)
+        show|delete|open)
             _arguments \
                 '(- *)--help[Show help]' \
+                '1:id:'
+            ;;
+        edit)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '-t+[Title]:title:' \
+                '--title=[Title]:title:' \
+                '-n+[Note]:note:' \
+                '--note=[Note]:note:' \
+                '-e+[Extracted text]:text:' \
+                '--extracted-text=[Extracted text]:text:' \
+                '*--add-tag=[Add tag]:tag:' \
+                '*--remove-tag=[Remove tag]:tag:' \
+                '-c+[Collection]:collection:' \
+                '--collection=[Collection]:collection:' \
                 '1:id:'
             ;;
         tag)

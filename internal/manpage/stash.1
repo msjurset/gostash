@@ -1,0 +1,206 @@
+.TH STASH 1 "2026-03-18" "stash v0.2.0" "User Commands"
+.SH NAME
+stash \- personal knowledge vault
+.SH SYNOPSIS
+.B stash
+.RI [ command ]
+.RI [ flags ]
+.SH DESCRIPTION
+.B stash
+captures, organizes, and searches URLs, text snippets, files, images,
+and email messages. All content is stored locally with full-text search
+powered by SQLite FTS5.
+.PP
+Running
+.B stash
+with no arguments launches the interactive TUI.
+.SH COMMANDS
+.TP
+.B add \fI<url|file|->\fR
+Stash a URL, file, or stdin snippet. URLs are fetched and content is
+extracted automatically. Files are stored in a content-addressable store
+and text is extracted when possible. Use \fB-\fR to read from stdin.
+.TP
+.B list
+List stashed items, optionally filtered by type, tag, collection, or
+date range.
+.TP
+.B search \fI<query>\fR
+Full-text search across all stashed content.
+.TP
+.B show \fI<id>\fR
+Show details of a stashed item. Accepts prefix IDs (minimum 6 characters).
+.TP
+.B edit \fI<id>\fR
+Edit a stashed item's title, notes, tags, or extracted text.
+.TP
+.B delete \fI<id>\fR
+Delete a stashed item. Prompts for confirmation unless \fB-y\fR is given.
+.TP
+.B open \fI<id>\fR
+Open a stashed item in its default application.
+.TP
+.B tag list
+List all tags.
+.TP
+.B tag rename \fI<old> <new>\fR
+Rename a tag across all items.
+.TP
+.B collection list
+List all collections.
+.TP
+.B collection create \fI<name>\fR
+Create a new collection. Use \fB-d\fR to set a description.
+.TP
+.B collection show \fI<name>\fR
+Show items in a collection.
+.TP
+.B collection delete \fI<name>\fR
+Delete a collection (items are retained).
+.TP
+.B ui\fR, \fBtui
+Launch the interactive terminal UI.
+.TP
+.B man
+Display this manual page.
+.SH OPTIONS
+.SS Global Flags
+.TP
+.B \-\-json
+Output as JSON.
+.TP
+.B \-\-db \fI<path>\fR
+Custom database path.
+.TP
+.B \-\-help
+Show help.
+.TP
+.B \-\-version
+Show version.
+.SS Add Flags
+.TP
+.B \-t\fR, \fB\-\-title \fI<title>\fR
+Set a custom title (auto-detected if omitted).
+.TP
+.B \-T\fR, \fB\-\-tag \fI<tag>\fR
+Add tags (repeatable).
+.TP
+.B \-n\fR, \fB\-\-note \fI<note>\fR
+Attach a note.
+.TP
+.B \-c\fR, \fB\-\-collection \fI<name>\fR
+Add to a collection.
+.TP
+.B \-\-type \fI<type>\fR
+Force item type: link, snippet, file, image, email.
+.SS Edit Flags
+.TP
+.B \-t\fR, \fB\-\-title \fI<title>\fR
+Set a new title.
+.TP
+.B \-n\fR, \fB\-\-note \fI<note>\fR
+Set a new note.
+.TP
+.B \-e\fR, \fB\-\-extracted\-text \fI<text>\fR
+Set the extracted text content.
+.TP
+.B \-\-add\-tag \fI<tag>\fR
+Add a tag (repeatable).
+.TP
+.B \-\-remove\-tag \fI<tag>\fR
+Remove a tag (repeatable).
+.TP
+.B \-c\fR, \fB\-\-collection \fI<name>\fR
+Add to a collection.
+.SS Filter Flags (list, search)
+.TP
+.B \-\-type \fI<type>\fR
+Filter by item type.
+.TP
+.B \-\-tag \fI<tag>\fR
+Filter by tag.
+.TP
+.B \-\-collection \fI<name>\fR
+Filter by collection.
+.TP
+.B \-\-after \fI<date>\fR
+Show items created after this date.
+.TP
+.B \-\-before \fI<date>\fR
+Show items created before this date.
+.TP
+.B \-l\fR, \fB\-\-limit \fI<n>\fR
+Maximum number of results (default 50).
+.SH INTERACTIVE KEYS
+The TUI supports the following keys:
+.TP
+.B /
+Open search. Supports \fBtag:\fIname\fR filter syntax.
+.TP
+.B 1\-5
+Toggle type filter (1=links, 2=snippets, 3=files, 4=images, 5=emails).
+.TP
+.B j/k \fRor\fB Up/Down
+Navigate items.
+.TP
+.B Enter
+View item detail.
+.TP
+.B r
+Refresh item list.
+.TP
+.B q
+Quit (list view) or go back (detail view).
+.TP
+.B Ctrl+C
+Force quit.
+.TP
+.B Ctrl+L
+Clear search and filters.
+.SH ITEM TYPES
+.TP
+.B link
+Bookmarked URLs. Content is fetched and extracted via readability.
+.TP
+.B snippet
+Text captured from stdin.
+.TP
+.B file
+Local files stored in the content-addressable file store.
+.TP
+.B image
+Image files with metadata extraction.
+.TP
+.B email
+RFC 2822 email messages (.eml files) with header and body extraction.
+.SH CONFIGURATION
+Configuration is read from \fI~/.config/stash/config.toml\fR:
+.PP
+.nf
+data_dir  = "~/.stash"
+db_path   = "~/.stash/stash.db"
+files_dir = "~/.stash/files"
+.fi
+.PP
+Precedence: CLI flags > \fBSTASH_DIR\fR env var > config file > defaults.
+.SH FILES
+.TP
+.I ~/.config/stash/config.toml
+Configuration file.
+.TP
+.I ~/.stash/stash.db
+SQLite database with FTS5 full-text search.
+.TP
+.I ~/.stash/files/
+Content-addressable file store (SHA-256).
+.SH ENVIRONMENT
+.TP
+.B STASH_DIR
+Override the data directory (default: \fI~/.stash\fR).
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Error.

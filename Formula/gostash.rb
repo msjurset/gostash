@@ -1,4 +1,4 @@
-class Stash < Formula
+class Gostash < Formula
   desc "Personal knowledge vault — capture, organize, and search anything"
   homepage "https://github.com/msjurset/gostash"
   license "MIT"

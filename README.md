@@ -18,7 +18,7 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 ### Homebrew
 
 ```sh
-brew install msjurset/tap/stash
+brew install msjurset/tap/gostash
 ```
 
 This installs the binary, man page, and shell completions.

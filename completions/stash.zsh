@@ -12,6 +12,8 @@ _stash() {
         'open:Open a stashed item in its default application'
         'tag:Manage tags'
         'collection:Manage collections'
+        'link:Create a link between two items'
+        'unlink:Remove a link between two items'
         'ui:Interactive TUI for browsing and searching'
         'man:Display the stash manual page'
         'help:Help about any command'
@@ -42,13 +44,14 @@ _stash() {
                 '--note=[Note]:note:' \
                 '-c+[Collection]:collection:' \
                 '--collection=[Collection]:collection:' \
-                '--type=[Force type]:type:(link snippet file image email)' \
+                '--type=[Force type]:type:(url snippet file image email)' \
+                '(-d --delete)'{-d,--delete}'[Delete source after stash]' \
                 '1:source:_files'
             ;;
         search)
             _arguments \
                 '(- *)--help[Show help]' \
-                '--type=[Filter by type]:type:(link snippet file image email)' \
+                '--type=[Filter by type]:type:(url snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \
@@ -60,7 +63,7 @@ _stash() {
         list)
             _arguments \
                 '(- *)--help[Show help]' \
-                '--type=[Filter by type]:type:(link snippet file image email)' \
+                '--type=[Filter by type]:type:(url snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \
@@ -72,6 +75,21 @@ _stash() {
             _arguments \
                 '(- *)--help[Show help]' \
                 '1:id:'
+            ;;
+        link)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '-l+[Label]:label:' \
+                '--label=[Label]:label:' \
+                '--directed[Create directed link]' \
+                '1:id1:' \
+                '2:id2:'
+            ;;
+        unlink)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '1:id1:' \
+                '2:id2:'
             ;;
         edit)
             _arguments \

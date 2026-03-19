@@ -9,12 +9,29 @@ import (
 type ItemType string
 
 const (
-	TypeLink    ItemType = "link"
+	TypeURL     ItemType = "link" // stored as "link" in DB; displayed as "url"
 	TypeSnippet ItemType = "snippet"
 	TypeFile    ItemType = "file"
 	TypeImage   ItemType = "image"
 	TypeEmail   ItemType = "email"
 )
+
+// Display returns the user-facing name for the type.
+func (t ItemType) Display() string {
+	if t == TypeURL {
+		return "url"
+	}
+	return string(t)
+}
+
+// ParseItemType converts a user-supplied type string to an ItemType.
+// Accepts "url" as an alias for the stored value "link".
+func ParseItemType(s string) ItemType {
+	if s == "url" {
+		return TypeURL
+	}
+	return ItemType(s)
+}
 
 // Item is the core domain entity.
 type Item struct {
@@ -34,6 +51,7 @@ type Item struct {
 	UpdatedAt     time.Time       `json:"updated_at"`
 	Tags          []Tag           `json:"tags,omitempty"`
 	Collections   []Collection    `json:"collections,omitempty"`
+	Links         []Link          `json:"links,omitempty"`
 }
 
 // Tag is a label applied to items.
@@ -49,12 +67,22 @@ type Collection struct {
 	Description string `json:"description,omitempty"`
 }
 
+// Link represents a relationship between two items.
+type Link struct {
+	ItemID    string   `json:"item_id"`
+	Title     string   `json:"title"`
+	Type      ItemType `json:"type"`
+	Label     string   `json:"label,omitempty"`
+	Direction string   `json:"direction"` // "none", "outgoing", "incoming"
+}
+
 // ItemFilter holds query parameters for listing and searching items.
 type ItemFilter struct {
 	Query      string
 	Type       ItemType
 	Tags       []string
 	Collection string
+	LinkedTo   string
 	After      *time.Time
 	Before     *time.Time
 	Limit      int

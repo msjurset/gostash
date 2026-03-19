@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/model"
 
 	"github.com/spf13/cobra"
@@ -39,12 +40,19 @@ func runOpen(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("nothing to open for this item")
 	}
 
+	// Use configured image viewer for image items
+	if item.Type == model.TypeImage {
+		if viewer := config.Get().ImageViewer; viewer != "" {
+			return exec.Command(viewer, target).Start()
+		}
+	}
+
 	return openExternal(target)
 }
 
 func openTarget(item *model.Item) string {
 	switch item.Type {
-	case model.TypeLink:
+	case model.TypeURL:
 		return item.URL
 	case model.TypeFile, model.TypeImage:
 		if item.StorePath != "" {

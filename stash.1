@@ -1,4 +1,4 @@
-.TH STASH 1 "2026-03-18" "stash v0.2.0" "User Commands"
+.TH STASH 1 "2026-03-19" "stash v0.4.0" "User Commands"
 .SH NAME
 stash \- personal knowledge vault
 .SH SYNOPSIS
@@ -7,19 +7,20 @@ stash \- personal knowledge vault
 .RI [ flags ]
 .SH DESCRIPTION
 .B stash
-captures, organizes, and searches URLs, text snippets, files, images,
-and email messages. All content is stored locally with full-text search
-powered by SQLite FTS5.
+captures, organizes, and searches URLs, text snippets, files, directories,
+images, and email messages. All content is stored locally with full-text
+search powered by SQLite FTS5.
 .PP
 Running
 .B stash
 with no arguments launches the interactive TUI.
 .SH COMMANDS
 .TP
-.B add \fI<url|file|->\fR
-Stash a URL, file, or stdin snippet. URLs are fetched and content is
-extracted automatically. Files are stored in a content-addressable store
-and text is extracted when possible. Use \fB-\fR to read from stdin.
+.B add \fI<url|file|dir|->\fR
+Stash a URL, file, directory, or stdin snippet. URLs are fetched and
+content is extracted automatically. Files are stored in a content-addressable
+store and text is extracted when possible. Directories are automatically
+archived as tar.gz before storing. Use \fB-\fR to read from stdin.
 .TP
 .B list
 List stashed items, optionally filtered by type, tag, collection, or
@@ -30,6 +31,7 @@ Full-text search across all stashed content.
 .TP
 .B show \fI<id>\fR
 Show details of a stashed item. Accepts prefix IDs (minimum 6 characters).
+Archive items (tar.gz, zip) display a tree listing of their contents.
 .TP
 .B edit \fI<id>\fR
 Edit a stashed item's title, notes, tags, or extracted text.
@@ -39,6 +41,13 @@ Delete a stashed item. Prompts for confirmation unless \fB-y\fR is given.
 .TP
 .B open \fI<id>\fR
 Open a stashed item in its default application.
+.TP
+.B link \fI<id1> <id2>\fR
+Create a link between two items. Use \fB-l\fR to add a label
+and \fB--directed\fR for a one-way link.
+.TP
+.B unlink \fI<id1> <id2>\fR
+Remove a link between two items.
 .TP
 .B tag list
 List all tags.
@@ -93,6 +102,17 @@ Add to a collection.
 .TP
 .B \-\-type \fI<type>\fR
 Force item type: link, snippet, file, image, email.
+.TP
+.B \-d\fR, \fB\-\-delete
+Delete the source file or directory after a successful stash.
+Only applies to file and directory sources, not URLs or stdin.
+.SS Link Flags
+.TP
+.B \-l\fR, \fB\-\-label \fI<label>\fR
+Add a label to the link.
+.TP
+.B \-\-directed
+Create a directed link (from id1 to id2).
 .SS Edit Flags
 .TP
 .B \-t\fR, \fB\-\-title \fI<title>\fR
@@ -138,13 +158,25 @@ The TUI supports the following keys:
 Open search. Supports \fBtag:\fIname\fR filter syntax.
 .TP
 .B 1\-5
-Toggle type filter (1=links, 2=snippets, 3=files, 4=images, 5=emails).
+Toggle type filter (1=urls, 2=snippets, 3=files, 4=images, 5=emails).
 .TP
 .B j/k \fRor\fB Up/Down
 Navigate items.
 .TP
 .B Enter
 View item detail.
+.TP
+.B o
+Open item in default application. Archives are extracted to a temp directory.
+.TP
+.B d
+Delete item (prompts for y/n confirmation).
+.TP
+.B l
+Link current item to another (search and select).
+.TP
+.B u
+Unlink a linked item (select from list).
 .TP
 .B r
 Refresh item list.
@@ -177,9 +209,10 @@ RFC 2822 email messages (.eml files) with header and body extraction.
 Configuration is read from \fI~/.config/stash/config.toml\fR:
 .PP
 .nf
-data_dir  = "~/.stash"
-db_path   = "~/.stash/stash.db"
-files_dir = "~/.stash/files"
+data_dir     = "~/.stash"
+db_path      = "~/.stash/stash.db"
+files_dir    = "~/.stash/files"
+image_viewer = ""  # custom image viewer command
 .fi
 .PP
 Precedence: CLI flags > \fBSTASH_DIR\fR env var > config file > defaults.

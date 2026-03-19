@@ -11,9 +11,10 @@ import (
 
 // Config holds all configurable paths.
 type Config struct {
-	DataDir  string `toml:"data_dir"`
-	DBPath   string `toml:"db_path"`
-	FilesDir string `toml:"files_dir"`
+	DataDir     string `toml:"data_dir"`
+	DBPath      string `toml:"db_path"`
+	FilesDir    string `toml:"files_dir"`
+	ImageViewer string `toml:"image_viewer"`
 }
 
 var (
@@ -124,6 +125,7 @@ func WriteDefault() error {
 # data_dir = "~/.stash"
 # db_path  = "~/.stash/stash.db"
 # files_dir = "~/.stash/files"
+# image_viewer = ""
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }

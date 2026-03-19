@@ -22,6 +22,11 @@ type Store interface {
 	AddTag(ctx context.Context, itemID, tag string) error
 	RemoveTag(ctx context.Context, itemID, tag string) error
 
+	// Links
+	LinkItems(ctx context.Context, fromID, toID, label string, directed bool) error
+	UnlinkItems(ctx context.Context, idA, idB string) error
+	ListLinks(ctx context.Context, itemID string) ([]model.Link, error)
+
 	// Collections
 	ListCollections(ctx context.Context) ([]model.Collection, error)
 	CreateCollection(ctx context.Context, name, description string) (*model.Collection, error)

@@ -27,7 +27,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
-	m := tui.New(s)
+	fs := openFileStore()
+	m := tui.New(s, fs)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open tag collection ui man help"
+    local commands="add search list show edit delete open link unlink tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -17,9 +17,9 @@ _stash() {
     case "${words[1]}" in
     add)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--title -t --tag -T --note -n --collection -c --type --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title -t --tag -T --note -n --collection -c --type --delete -d --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
+            COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
         else
             COMPREPLY=($(compgen -f -- "$cur"))
         fi
@@ -28,14 +28,14 @@ _stash() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
+            COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
         fi
         ;;
     list)
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
-            COMPREPLY=($(compgen -W "link snippet file image email" -- "$cur"))
+            COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
         fi
         ;;
     edit)
@@ -46,6 +46,16 @@ _stash() {
     delete)
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--yes -y --help" -- "$cur"))
+        fi
+        ;;
+    link)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--label -l --directed --help" -- "$cur"))
+        fi
+        ;;
+    unlink)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--help" -- "$cur"))
         fi
         ;;
     tag)

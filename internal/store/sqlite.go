@@ -46,18 +46,40 @@ func NewSQLite(dsn string) (*SQLiteStore, error) {
 }
 
 func (s *SQLiteStore) migrate() error {
-	data, err := migrationsFS.ReadFile("migrations/001_initial.up.sql")
+	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("read migration: %w", err)
+		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	if _, err := s.db.Exec(string(data)); err != nil {
-		return fmt.Errorf("exec migration: %w", err)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		data, err := migrationsFS.ReadFile("migrations/" + e.Name())
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", e.Name(), err)
+		}
+		if _, err := s.db.Exec(string(data)); err != nil {
+			return fmt.Errorf("exec migration %s: %w", e.Name(), err)
+		}
 	}
 	return nil
 }
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// prefixQuery converts a plain search string into an FTS5 prefix query
+// so that partial words match. "hello wor" becomes "hello* wor*".
+// Words that already end with * are left as-is.
+func prefixQuery(q string) string {
+	words := strings.Fields(q)
+	for i, w := range words {
+		if !strings.HasSuffix(w, "*") {
+			words[i] = w + "*"
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // CreateItem inserts a new item and its tags/collections.
@@ -133,8 +155,10 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 	var where []string
 	var args []any
 
+	// Build FTS5 query with prefix wildcards so partial words match
+	ftsQuery := prefixQuery(filter.Query)
 	where = append(where, "i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)")
-	args = append(args, filter.Query)
+	args = append(args, ftsQuery)
 
 	if filter.Type != "" {
 		where = append(where, "i.type = ?")
@@ -233,6 +257,7 @@ func (s *SQLiteStore) DeleteItem(ctx context.Context, id string) error {
 func (s *SQLiteStore) ListTags(ctx context.Context) ([]model.Tag, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.name FROM tags t
+		WHERE EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id = t.id)
 		ORDER BY t.name`)
 	if err != nil {
 		return nil, fmt.Errorf("list tags: %w", err)
@@ -383,6 +408,72 @@ func (s *SQLiteStore) ListCollectionItems(ctx context.Context, name string, filt
 	return s.ListItems(ctx, filter)
 }
 
+// LinkItems creates a link between two items.
+func (s *SQLiteStore) LinkItems(ctx context.Context, fromID, toID, label string, directed bool) error {
+	if fromID == toID {
+		return fmt.Errorf("cannot link an item to itself")
+	}
+	// For undirected links, canonicalize order so lookups are consistent.
+	if !directed && fromID > toID {
+		fromID, toID = toID, fromID
+	}
+	dirInt := 0
+	if directed {
+		dirInt = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO item_links (item_id_from, item_id_to, label, directed) VALUES (?, ?, ?, ?)`,
+		fromID, toID, label, dirInt)
+	if err != nil {
+		return fmt.Errorf("link items: %w", err)
+	}
+	return nil
+}
+
+// UnlinkItems removes a link between two items.
+func (s *SQLiteStore) UnlinkItems(ctx context.Context, idA, idB string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM item_links WHERE (item_id_from = ? AND item_id_to = ?) OR (item_id_from = ? AND item_id_to = ?)`,
+		idA, idB, idB, idA)
+	if err != nil {
+		return fmt.Errorf("unlink items: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no link found between %s and %s", idA, idB)
+	}
+	return nil
+}
+
+// ListLinks returns all links for an item.
+func (s *SQLiteStore) ListLinks(ctx context.Context, itemID string) ([]model.Link, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT i.id, i.title, i.type, l.label,
+		       CASE WHEN l.directed = 0 THEN 'none' ELSE 'outgoing' END AS direction
+		FROM item_links l JOIN items i ON i.id = l.item_id_to
+		WHERE l.item_id_from = ?
+		UNION ALL
+		SELECT i.id, i.title, i.type, l.label,
+		       CASE WHEN l.directed = 0 THEN 'none' ELSE 'incoming' END AS direction
+		FROM item_links l JOIN items i ON i.id = l.item_id_from
+		WHERE l.item_id_to = ?
+		ORDER BY title`, itemID, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list links: %w", err)
+	}
+	defer rows.Close()
+
+	var links []model.Link
+	for rows.Next() {
+		var lk model.Link
+		if err := rows.Scan(&lk.ItemID, &lk.Title, &lk.Type, &lk.Label, &lk.Direction); err != nil {
+			return nil, fmt.Errorf("scan link: %w", err)
+		}
+		links = append(links, lk)
+	}
+	return links, rows.Err()
+}
+
 // --- internal helpers ---
 
 func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
@@ -476,7 +567,17 @@ func (s *SQLiteStore) loadRelations(ctx context.Context, item *model.Item) error
 		}
 		item.Collections = append(item.Collections, c)
 	}
-	return rows2.Err()
+	if err := rows2.Err(); err != nil {
+		return err
+	}
+
+	// Load links
+	links, err := s.ListLinks(ctx, item.ID)
+	if err != nil {
+		return err
+	}
+	item.Links = links
+	return nil
 }
 
 func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
@@ -501,6 +602,14 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 	if filter.Collection != "" {
 		where = append(where, "i.id IN (SELECT ic.item_id FROM item_collections ic JOIN collections c ON c.id = ic.collection_id WHERE c.name = ?)")
 		args = append(args, filter.Collection)
+	}
+	if filter.LinkedTo != "" {
+		where = append(where, `i.id IN (
+			SELECT item_id_to FROM item_links WHERE item_id_from = ?
+			UNION
+			SELECT item_id_from FROM item_links WHERE item_id_to = ?
+		)`)
+		args = append(args, filter.LinkedTo, filter.LinkedTo)
 	}
 	if filter.After != nil {
 		where = append(where, "i.created_at >= ?")

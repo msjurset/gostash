@@ -13,7 +13,7 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
-	listCmd.Flags().String("type", "", "Filter by type (link, snippet, file, image)")
+	listCmd.Flags().String("type", "", "Filter by type (url, snippet, file, image)")
 	listCmd.Flags().StringSlice("tag", nil, "Filter by tag (repeatable)")
 	listCmd.Flags().String("collection", "", "Filter by collection")
 	listCmd.Flags().String("after", "", "Created after (YYYY-MM-DD)")

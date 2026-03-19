@@ -22,7 +22,13 @@ var showCmd = &cobra.Command{
 			return err
 		}
 
-		printItem(item)
+		var archivePath string
+		if item.StorePath != "" {
+			fs := openFileStore()
+			archivePath = fs.Path(item.StorePath)
+		}
+
+		printItem(item, archivePath)
 		return nil
 	},
 }

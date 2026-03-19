@@ -1,14 +1,15 @@
 # stash
 
-A personal knowledge vault for the command line. Capture URLs, text snippets, files, images, and emails — then search across everything with full-text search.
+A personal knowledge vault for the command line. Capture URLs, text snippets, files, directories, images, and emails — then search across everything with full-text search.
 
 ## Features
 
-- **Capture anything** — URLs (with automatic title/content extraction), text from stdin, local files, images, `.eml` emails
-- **Full-text search** — SQLite FTS5-powered search across all stored content
+- **Capture anything** — URLs (with automatic title/content extraction), text from stdin, local files, directories (auto-archived as tar.gz), images, `.eml` emails
+- **Full-text search** — SQLite FTS5-powered search with partial word matching
 - **Tags & collections** — Organize items with tags and named collections
+- **Item linking** — Create labeled relationships between items
 - **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages
-- **Interactive TUI** — Browse and search with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea)
+- **Interactive TUI** — Browse, search, link, and delete with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea), with inline image preview (Kitty protocol)
 - **Configurable** — TOML config file at `~/.config/stash/config.toml`
 - **JSON output** — Script-friendly `--json` flag on all commands
 - **Shell completions** — Bash and Zsh
@@ -54,6 +55,12 @@ echo "quick note" | stash add - -t "My Note"
 # Save a file
 stash add report.pdf -T work,reports
 
+# Save a directory (archived as tar.gz)
+stash add ./my-project/ -T code
+
+# Save and delete the source file
+stash add report.pdf -d
+
 # Save an email
 stash add message.eml -T inbox
 
@@ -71,13 +78,15 @@ stash ui
 
 | Command | Description |
 |---------|-------------|
-| `add <url\|file\|->` | Capture a URL, file, or stdin snippet |
+| `add <url\|file\|dir\|->` | Capture a URL, file, directory, or stdin snippet |
 | `list` | List stashed items with optional filters |
 | `search <query>` | Full-text search across all content |
 | `show <id>` | Display item details |
 | `edit <id>` | Edit title, notes, or tags |
 | `delete <id>` | Remove an item |
 | `open <id>` | Open in default application |
+| `link <id1> <id2>` | Create a link between two items |
+| `unlink <id1> <id2>` | Remove a link between two items |
 | `tag list` | List all tags |
 | `tag rename <old> <new>` | Rename a tag |
 | `collection list` | List collections |
@@ -95,15 +104,22 @@ stash ui
 - `-n <note>` — Add a note (on `add`/`edit`)
 - `-c <collection>` — Add to collection (on `add`)
 - `--type <type>` — Force item type: `link`, `snippet`, `file`, `image`, `email` (on `add`)
+- `-d` / `--delete` — Delete source file/directory after successful stash (on `add`)
+- `-l <label>` / `--label` — Link label (on `link`)
+- `--directed` — Create a directed link (on `link`)
 
 ### TUI Keys
 
 | Key | Action |
 |-----|--------|
 | `/` | Search (supports `tag:name` filter syntax) |
-| `1`–`5` | Filter by type (links, snippets, files, images, emails) |
+| `1`–`5` | Filter by type (urls, snippets, files, images, emails) |
 | `j`/`k` or arrows | Navigate |
 | `enter` | View detail |
+| `o` | Open item externally |
+| `d` | Delete item (with confirmation) |
+| `l` | Link to another item |
+| `u` | Unlink an item |
 | `r` | Refresh |
 | `q` | Quit / back |
 | `ctrl+c` | Force quit |
@@ -114,9 +130,10 @@ stash ui
 Config file: `~/.config/stash/config.toml`
 
 ```toml
-data_dir  = "~/.stash"
-db_path   = "~/.stash/stash.db"
-files_dir = "~/.stash/files"
+data_dir     = "~/.stash"
+db_path      = "~/.stash/stash.db"
+files_dir    = "~/.stash/files"
+image_viewer = ""  # custom image viewer command (optional)
 ```
 
 Precedence: CLI flags > `STASH_DIR` env var > config file > defaults.

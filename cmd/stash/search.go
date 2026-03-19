@@ -17,7 +17,7 @@ var searchCmd = &cobra.Command{
 }
 
 func init() {
-	searchCmd.Flags().String("type", "", "Filter by type (link, snippet, file, image)")
+	searchCmd.Flags().String("type", "", "Filter by type (url, snippet, file, image)")
 	searchCmd.Flags().StringSlice("tag", nil, "Filter by tag (repeatable)")
 	searchCmd.Flags().String("collection", "", "Filter by collection")
 	searchCmd.Flags().String("after", "", "Created after (YYYY-MM-DD)")
@@ -51,7 +51,7 @@ func buildFilter(cmd *cobra.Command, query string) (model.ItemFilter, error) {
 	f := model.ItemFilter{Query: query}
 
 	if v, _ := cmd.Flags().GetString("type"); v != "" {
-		f.Type = model.ItemType(v)
+		f.Type = model.ParseItemType(v)
 	}
 	if v, _ := cmd.Flags().GetStringSlice("tag"); len(v) > 0 {
 		f.Tags = v

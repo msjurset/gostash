@@ -36,7 +36,7 @@ var (
 	tagStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("109"))
 
-	linkStyle = lipgloss.NewStyle().
+	urlTypeStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("75")).
 			Bold(true)
 

@@ -65,7 +65,7 @@ func TestListItems(t *testing.T) {
 	ctx := context.Background()
 
 	for _, id := range []string{"01A", "01B", "01C"} {
-		item := testItem(id, model.TypeLink)
+		item := testItem(id, model.TypeURL)
 		item.URL = "https://example.com/" + id
 		if err := s.CreateItem(ctx, item); err != nil {
 			t.Fatalf("create %s: %v", id, err)
@@ -85,14 +85,14 @@ func TestListItemsFilterByType(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.CreateItem(ctx, testItem("01A", model.TypeLink)); err != nil {
+	if err := s.CreateItem(ctx, testItem("01A", model.TypeURL)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateItem(ctx, testItem("01B", model.TypeSnippet)); err != nil {
 		t.Fatal(err)
 	}
 
-	items, err := s.ListItems(ctx, model.ItemFilter{Type: model.TypeLink})
+	items, err := s.ListItems(ctx, model.ItemFilter{Type: model.TypeURL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestCollections(t *testing.T) {
 		t.Errorf("name = %q, want %q", col.Name, "reading")
 	}
 
-	item := testItem("01A", model.TypeLink)
+	item := testItem("01A", model.TypeURL)
 	if err := s.CreateItem(ctx, item); err != nil {
 		t.Fatal(err)
 	}

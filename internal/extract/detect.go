@@ -43,6 +43,8 @@ func SuggestTags(mimeType string) []string {
 		return []string{"web"}
 	case mimeType == MIMEEmail:
 		return []string{"email"}
+	case strings.Contains(mimeType, "gzip") || strings.Contains(mimeType, "tar") || strings.Contains(mimeType, "zip"):
+		return []string{"archive"}
 	default:
 		return nil
 	}

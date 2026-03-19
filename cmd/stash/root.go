@@ -19,7 +19,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "stash",
 	Short:   "Personal knowledge vault",
-	Long:    "Capture, organize, and search anything — links, text snippets, files, images.",
+	Long:    "Capture, organize, and search anything — URLs, text snippets, files, images.",
 	Version: version,
 	RunE:    runTUI,
 }

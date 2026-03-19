@@ -12,7 +12,11 @@ type keyMap struct {
 	Search        key.Binding
 	Clear         key.Binding
 	Refresh       key.Binding
-	FilterLink    key.Binding
+	OpenExternal  key.Binding
+	Delete        key.Binding
+	LinkItem      key.Binding
+	UnlinkItem    key.Binding
+	FilterURL     key.Binding
 	FilterSnippet key.Binding
 	FilterFile    key.Binding
 	FilterImage   key.Binding
@@ -56,9 +60,25 @@ var keys = keyMap{
 		key.WithKeys("r"),
 		key.WithHelp("r", "refresh"),
 	),
-	FilterLink: key.NewBinding(
+	OpenExternal: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "open externally"),
+	),
+	Delete: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "delete item"),
+	),
+	LinkItem: key.NewBinding(
+		key.WithKeys("l"),
+		key.WithHelp("l", "link item"),
+	),
+	UnlinkItem: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "unlink item"),
+	),
+	FilterURL: key.NewBinding(
 		key.WithKeys("1"),
-		key.WithHelp("1", "links"),
+		key.WithHelp("1", "urls"),
 	),
 	FilterSnippet: key.NewBinding(
 		key.WithKeys("2"),

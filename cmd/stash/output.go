@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/model"
 )
 
@@ -33,7 +34,7 @@ func printItems(items []model.Item) {
 		tags := tagNames(item.Tags)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			shortID(item.ID),
-			item.Type,
+			item.Type.Display(),
 			truncate(item.Title, 50),
 			tags,
 			relTime(item.CreatedAt),
@@ -42,14 +43,14 @@ func printItems(items []model.Item) {
 	w.Flush()
 }
 
-func printItem(item *model.Item) {
+func printItem(item *model.Item, storePath ...string) {
 	if flagJSON {
 		printJSON(item)
 		return
 	}
 
 	fmt.Printf("ID:          %s\n", item.ID)
-	fmt.Printf("Type:        %s\n", item.Type)
+	fmt.Printf("Type:        %s\n", item.Type.Display())
 	fmt.Printf("Title:       %s\n", item.Title)
 	if item.URL != "" {
 		fmt.Printf("URL:         %s\n", item.URL)
@@ -76,12 +77,43 @@ func printItem(item *model.Item) {
 		}
 		fmt.Printf("Collections: %s\n", strings.Join(names, ", "))
 	}
+	if len(item.Links) > 0 {
+		fmt.Println("Links:")
+		for _, lk := range item.Links {
+			arrow := "\u2194" // ↔
+			switch lk.Direction {
+			case "outgoing":
+				arrow = "\u2192" // →
+			case "incoming":
+				arrow = "\u2190" // ←
+			}
+			label := ""
+			if lk.Label != "" {
+				label = " (" + lk.Label + ")"
+			}
+			fmt.Printf("  %s [%s] %-7s %s%s\n", arrow, shortID(lk.ItemID), lk.Type, lk.Title, label)
+		}
+	}
 	fmt.Printf("Created:     %s\n", item.CreatedAt.Format(time.RFC3339))
 	fmt.Printf("Updated:     %s\n", item.UpdatedAt.Format(time.RFC3339))
 
-	if item.ExtractedText != "" {
+	// Show archive contents tree for archive MIME types
+	if isArchiveMIME(item.MimeType) && len(storePath) > 0 && storePath[0] != "" {
+		entries, err := extract.ListArchiveFile(storePath[0], item.MimeType)
+		if err == nil && len(entries) > 0 {
+			fmt.Printf("\n--- Archive Contents ---\n%s", extract.FormatTree(entries))
+		}
+	}
+
+	if item.ExtractedText != "" && !isArchiveMIME(item.MimeType) {
 		fmt.Printf("\n--- Extracted Text ---\n%s\n", truncate(item.ExtractedText, 500))
 	}
+}
+
+func isArchiveMIME(mimeType string) bool {
+	return strings.Contains(mimeType, "gzip") ||
+		strings.Contains(mimeType, "tar") ||
+		strings.Contains(mimeType, "zip")
 }
 
 func printTags(tags []model.Tag) {

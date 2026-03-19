@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	"github.com/msjurset/gostash/internal/config"
@@ -54,16 +57,73 @@ func openTarget(item *model.Item) string {
 	switch item.Type {
 	case model.TypeURL:
 		return item.URL
-	case model.TypeFile, model.TypeImage:
+	case model.TypeFile, model.TypeImage, model.TypeEmail:
 		if item.StorePath != "" {
 			fs := openFileStore()
-			return fs.Path(item.StorePath)
+			storePath := fs.Path(item.StorePath)
+			// Copy to a temp file with the correct extension so macOS
+			// opens the file with the right application
+			ext := extFromMIMEOrSource(item.MimeType, item.SourcePath)
+			if ext != "" {
+				tmpFile := filepath.Join(os.TempDir(), "stash-open-"+item.StorePath[:8]+ext)
+				if err := copyFile(storePath, tmpFile); err == nil {
+					return tmpFile
+				}
+			}
+			return storePath
 		}
 		if item.SourcePath != "" {
 			return item.SourcePath
 		}
 	}
 	return ""
+}
+
+func extFromMIMEOrSource(mimeType, sourcePath string) string {
+	// Prefer original source extension
+	if sourcePath != "" {
+		if ext := filepath.Ext(sourcePath); ext != "" {
+			return ext
+		}
+	}
+	// Fall back to MIME type
+	switch {
+	case mimeType == "application/pdf":
+		return ".pdf"
+	case mimeType == "text/html":
+		return ".html"
+	case mimeType == "text/plain":
+		return ".txt"
+	case mimeType == "image/png":
+		return ".png"
+	case mimeType == "image/jpeg":
+		return ".jpg"
+	case mimeType == "image/gif":
+		return ".gif"
+	case mimeType == "image/webp":
+		return ".webp"
+	case mimeType == "application/gzip":
+		return ".tar.gz"
+	case mimeType == "application/zip":
+		return ".zip"
+	default:
+		return ""
+	}
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func openExternal(target string) error {

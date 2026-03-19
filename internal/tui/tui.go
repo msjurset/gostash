@@ -35,6 +35,7 @@ const (
 	viewLinkLabel
 	viewUnlinkSelect
 	viewDeleteConfirm
+	viewHelp
 )
 
 // Model is the top-level bubbletea model.
@@ -309,6 +310,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Help view — any key dismisses
+	if m.activeView == viewHelp {
+		m.activeView = viewList
+		return m, nil
+	}
+
 	// Delete confirmation mode
 	if m.activeView == viewDeleteConfirm {
 		switch msg.String() {
@@ -361,6 +368,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, keys.Escape), key.Matches(msg, keys.Quit):
 			m.activeView = viewList
+			return m, nil
+		case key.Matches(msg, keys.Help):
+			m.activeView = viewHelp
 			return m, nil
 		case key.Matches(msg, keys.OpenExternal):
 			return m, m.openCurrentItem()
@@ -429,6 +439,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.toggleTypeFilter(model.TypeImage)
 	case key.Matches(msg, keys.FilterEmail):
 		return m, m.toggleTypeFilter(model.TypeEmail)
+	case key.Matches(msg, keys.Help):
+		m.activeView = viewHelp
+		return m, nil
 	case key.Matches(msg, keys.Delete):
 		if len(m.items) > 0 {
 			m.deleteReturnView = viewList
@@ -498,6 +511,8 @@ func (m Model) View() string {
 		return m.viewUnlinkSelect()
 	case viewDeleteConfirm:
 		return m.viewDeleteConfirm()
+	case viewHelp:
+		return m.viewHelp()
 	default:
 		return m.viewList()
 	}
@@ -641,6 +656,37 @@ func (m Model) viewUnlinkSelect() string {
 	return b.String()
 }
 
+func (m Model) viewHelp() string {
+	header := headerStyle.Width(m.width).Render("  Help  (press any key to dismiss)")
+	var b strings.Builder
+	b.WriteString(header + "\n\n")
+
+	helpItems := []struct{ key, desc string }{
+		{"/", "Search (supports tag:name filter syntax)"},
+		{"1-5", "Filter by type (urls, snippets, files, images, emails)"},
+		{"j/k or ↑/↓", "Navigate items"},
+		{"enter", "View item detail"},
+		{"o", "Open item in default application"},
+		{"d", "Delete item (with confirmation)"},
+		{"l", "Link current item to another"},
+		{"u", "Unlink a linked item"},
+		{"r", "Refresh item list"},
+		{"ctrl+l", "Clear search and filters"},
+		{"q", "Quit / back"},
+		{"ctrl+c", "Force quit"},
+		{"?", "Show this help"},
+	}
+
+	for _, h := range helpItems {
+		k := detailLabel.Render(fmt.Sprintf("  %-14s", h.key))
+		b.WriteString(k + h.desc + "\n")
+	}
+
+	b.WriteString("\n" + dimStyle.Render("  Search also matches tag names.") + "\n")
+
+	return b.String()
+}
+
 func (m Model) viewDeleteConfirm() string {
 	title := "(none)"
 	if m.cursor < len(m.items) {
@@ -664,7 +710,7 @@ func (m Model) deleteCurrentItem() tea.Cmd {
 
 func (m Model) statusBar() string {
 	left := fmt.Sprintf(" %d items", len(m.items))
-	right := " /:search  1-5:filter  r:refresh  enter:detail  o:open  d:delete  q:quit "
+	right := " /:search  1-5:filter  r:refresh  o:open  d:delete  ?:help  q:quit "
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
 		gap = 0
@@ -737,9 +783,21 @@ func (m *Model) openCurrentItem() tea.Cmd {
 	switch item.Type {
 	case model.TypeURL:
 		target = item.URL
-	case model.TypeFile, model.TypeImage:
+	case model.TypeFile, model.TypeImage, model.TypeEmail:
 		if item.StorePath != "" && m.files != nil {
-			target = m.files.Path(item.StorePath)
+			storePath := m.files.Path(item.StorePath)
+			// Copy to temp with correct extension so OS opens with the right app
+			ext := extFromMIMEOrSource(item.MimeType, item.SourcePath)
+			if ext != "" {
+				tmpFile := filepath.Join(os.TempDir(), "stash-open-"+item.StorePath[:8]+ext)
+				if err := copyFile(storePath, tmpFile); err == nil {
+					target = tmpFile
+				} else {
+					target = storePath
+				}
+			} else {
+				target = storePath
+			}
 		} else if item.SourcePath != "" {
 			target = item.SourcePath
 		}
@@ -964,6 +1022,51 @@ func humanSize(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func extFromMIMEOrSource(mimeType, sourcePath string) string {
+	if sourcePath != "" {
+		if ext := filepath.Ext(sourcePath); ext != "" {
+			return ext
+		}
+	}
+	switch {
+	case mimeType == "application/pdf":
+		return ".pdf"
+	case mimeType == "text/html":
+		return ".html"
+	case mimeType == "text/plain":
+		return ".txt"
+	case mimeType == "image/png":
+		return ".png"
+	case mimeType == "image/jpeg":
+		return ".jpg"
+	case mimeType == "image/gif":
+		return ".gif"
+	case mimeType == "image/webp":
+		return ".webp"
+	case mimeType == "application/gzip":
+		return ".tar.gz"
+	case mimeType == "application/zip":
+		return ".zip"
+	default:
+		return ""
+	}
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func isArchiveMIME(mimeType string) bool {

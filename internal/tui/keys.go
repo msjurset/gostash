@@ -16,6 +16,7 @@ type keyMap struct {
 	Delete        key.Binding
 	LinkItem      key.Binding
 	UnlinkItem    key.Binding
+	Help          key.Binding
 	FilterURL     key.Binding
 	FilterSnippet key.Binding
 	FilterFile    key.Binding
@@ -75,6 +76,10 @@ var keys = keyMap{
 	UnlinkItem: key.NewBinding(
 		key.WithKeys("u"),
 		key.WithHelp("u", "unlink item"),
+	),
+	Help: key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "help"),
 	),
 	FilterURL: key.NewBinding(
 		key.WithKeys("1"),

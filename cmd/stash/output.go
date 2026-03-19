@@ -20,6 +20,9 @@ func printJSON(v any) {
 
 func printItems(items []model.Item) {
 	if flagJSON {
+		if items == nil {
+			items = []model.Item{}
+		}
 		printJSON(items)
 		return
 	}
@@ -118,6 +121,9 @@ func isArchiveMIME(mimeType string) bool {
 
 func printTags(tags []model.Tag) {
 	if flagJSON {
+		if tags == nil {
+			tags = []model.Tag{}
+		}
 		printJSON(tags)
 		return
 	}
@@ -132,6 +138,9 @@ func printTags(tags []model.Tag) {
 
 func printCollections(cols []model.Collection) {
 	if flagJSON {
+		if cols == nil {
+			cols = []model.Collection{}
+		}
 		printJSON(cols)
 		return
 	}

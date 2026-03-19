@@ -155,10 +155,21 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 	var where []string
 	var args []any
 
-	// Build FTS5 query with prefix wildcards so partial words match
+	// Build FTS5 query with prefix wildcards so partial words match.
+	// Also match items whose tags contain any of the search words.
 	ftsQuery := prefixQuery(filter.Query)
-	where = append(where, "i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)")
+	words := strings.Fields(filter.Query)
+	tagLikes := make([]string, len(words))
+	var tagArgs []any
+	for i, w := range words {
+		tagLikes[i] = "t.name LIKE ?"
+		tagArgs = append(tagArgs, "%"+w+"%")
+	}
+	where = append(where, fmt.Sprintf(`(i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)
+		OR i.id IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE %s))`,
+		strings.Join(tagLikes, " OR ")))
 	args = append(args, ftsQuery)
+	args = append(args, tagArgs...)
 
 	if filter.Type != "" {
 		where = append(where, "i.type = ?")

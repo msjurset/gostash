@@ -224,6 +224,25 @@ Image files with metadata extraction.
 .TP
 .B email
 RFC 2822 email messages (.eml files) with header and body extraction.
+.SH ORGANIZING: TAGS VS COLLECTIONS VS LINKS
+Stash offers three ways to organize items, each serving a different purpose.
+.SS Tags \(em What is it about?
+Flat labels describing the content's topic or nature. An item can have many
+tags. Use tags for filtering, searching, and cross-cutting categories.
+Tags answer \fBshow me everything about X\fR.
+.SS Collections \(em Where does it belong?
+Named groups, like folders or projects. An item belongs to one collection
+(or none). Use collections for grouping items by purpose, project, or workflow.
+Collections answer \fBshow me everything for project Y\fR.
+.SS Links \(em How does it relate to other items?
+Direct relationships between specific items. Bidirectional or directed, with
+optional labels. Use links for connecting a source to its reference, or grouping
+related items that aren't topically similar.
+Links answer \fBwhat's connected to this specific item?\fR.
+.SS Tag Graph
+The tag graph (\fBg\fR in TUI, or Tag Graph in the sidebar) reveals how your
+topics cluster. Tags that frequently co-occur on the same items show your
+knowledge areas and how they overlap.
 .SH CONFIGURATION
 Configuration is read from \fI~/.config/stash/config.toml\fR:
 .PP

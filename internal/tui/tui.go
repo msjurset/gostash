@@ -844,6 +844,11 @@ func (m Model) viewHelp() string {
 	}
 
 	b.WriteString("\n" + dimStyle.Render("  Search also matches tag names.") + "\n")
+	b.WriteString("\n" + detailLabel.Render("  Organizing") + "\n")
+	b.WriteString(dimStyle.Render("  Tags")+" — what is it about? (filter, search, cross-cutting)\n")
+	b.WriteString(dimStyle.Render("  Collections")+" — where does it belong? (projects, workflows)\n")
+	b.WriteString(dimStyle.Render("  Links")+" — how does it relate to other items?\n")
+	b.WriteString(dimStyle.Render("  Tag graph")+" — reveals how your topics cluster\n")
 
 	return b.String()
 }

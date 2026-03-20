@@ -130,6 +130,35 @@ stash ui
 | `ctrl+c` | Force quit |
 | `ctrl+l` | Clear search |
 
+## Organizing: Tags vs Collections vs Links
+
+Stash offers three ways to organize items, each serving a different purpose:
+
+### Tags — *What is it about?*
+
+Flat labels describing the content's topic or nature. An item can have many tags. Use tags for filtering, searching, and cross-cutting categories.
+
+Example: an article about Go web servers might have `go`, `programming`, `web`.
+
+### Collections — *Where does it belong?*
+
+Named groups, like folders or projects. An item belongs to one collection (or none). Use collections for grouping items by purpose, project, or workflow.
+
+Example: "Job Search", "Home Renovation", "Q2 Research".
+
+### Links — *How does it relate to other items?*
+
+Direct relationships between specific items. Bidirectional or directed, with optional labels. Use links for connecting a source to its reference, or grouping related items that aren't topically similar.
+
+Example: linking a PDF resume to the job posting URL it was submitted for, or linking a recipe to the photo of the result.
+
+### In practice
+
+- **Tags** answer "show me everything about X"
+- **Collections** answer "show me everything for project Y"
+- **Links** answer "what's connected to this specific item?"
+- **Tag graph** (`g` in TUI, or Tag Graph in the Mac app sidebar) reveals how your topics cluster — tags that frequently co-occur show your knowledge areas and how they overlap.
+
 ## Configuration
 
 Config file: `~/.config/stash/config.toml`

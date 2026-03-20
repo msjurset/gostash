@@ -1,4 +1,4 @@
-.TH STASH 1 "2026-03-19" "stash v0.5.0" "User Commands"
+.TH STASH 1 "2026-03-19" "stash v0.6.0" "User Commands"
 .SH NAME
 stash \- personal knowledge vault
 .SH SYNOPSIS
@@ -54,6 +54,14 @@ List all tags.
 .TP
 .B tag rename \fI<old> <new>\fR
 Rename a tag across all items.
+.TP
+.B tag graph
+Show tag co-occurrence data. Each pair of tags that appear together
+on items is listed with a weight (number of shared items).
+.TP
+.B import bookmarks \fI<file>\fR
+Import bookmarks from a Chrome or Firefox HTML export. Folders become
+tags. Duplicate URLs are skipped. Use \fB--dry-run\fR to preview.
 .TP
 .B collection list
 List all collections.
@@ -169,6 +177,10 @@ View item detail.
 .B b
 Open file browser for browsing, selecting, and batch stashing files and directories.
 Supports multi-select (space), select all (a), open (o), and directory navigation (h/l or arrows).
+.TP
+.B g
+Tag graph \(em browse tags and their co-occurrence connections. Navigate
+with j/k, press Enter to filter the item list by the selected tag.
 .TP
 .B o
 Open item in default application. Archives are extracted to a temp directory.

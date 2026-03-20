@@ -25,6 +25,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const pageSize = 50
+
 // view represents which panel is active.
 type view int
 
@@ -39,6 +41,7 @@ const (
 	viewFileBrowser
 	viewStashConfirm
 	viewStashDetails
+	viewTagGraph
 )
 
 // Model is the top-level bubbletea model.
@@ -57,6 +60,8 @@ type Model struct {
 	cursor   int
 	offset   int
 	listRows int
+	page     int
+	hasMore  bool
 
 	// detail
 	activeView view
@@ -93,6 +98,11 @@ type Model struct {
 	detailQueue   []string
 	detailCurrent int
 
+	// tag graph
+	tagGraph       *model.TagGraph
+	tagGraphCursor int
+	tagGraphOffset int
+
 	err error
 }
 
@@ -104,6 +114,12 @@ type linkDoneMsg struct{ err error }
 type unlinkDoneMsg struct{ err error }
 type refreshedItemMsg struct{ item *model.Item }
 type deleteDoneMsg struct{ err error }
+type pageMsg struct {
+	items   []model.Item
+	page    int
+	hasMore bool
+}
+type tagGraphMsg struct{ graph *model.TagGraph }
 
 // New creates a new TUI model.
 func New(s store.Store, fs *filestore.FileStore) Model {
@@ -137,7 +153,7 @@ func New(s store.Store, fs *filestore.FileStore) Model {
 		search:          ti,
 		linkSearch:      ls,
 		linkLabel:       ll,
-		filter:          model.ItemFilter{Limit: 100},
+		filter:          model.ItemFilter{Limit: pageSize},
 		detailTitle:     dt,
 		detailTags:      dtags,
 		detailNote:      dn,
@@ -146,7 +162,17 @@ func New(s store.Store, fs *filestore.FileStore) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.fetchItems()
+	return tea.Batch(m.fetchItems(), m.fetchTagGraph())
+}
+
+func (m Model) fetchTagGraph() tea.Cmd {
+	return func() tea.Msg {
+		graph, err := m.store.TagGraph(context.Background())
+		if err != nil {
+			return nil
+		}
+		return tagGraphMsg{graph: graph}
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -165,7 +191,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg
 		m.cursor = 0
 		m.offset = 0
+		m.page = 0
+		m.hasMore = false
 		m.err = nil
+		return m, nil
+
+	case pageMsg:
+		m.items = msg.items
+		m.page = msg.page
+		m.hasMore = msg.hasMore
+		m.cursor = 0
+		m.offset = 0
+		m.err = nil
+		return m, nil
+
+	case tagGraphMsg:
+		m.tagGraph = msg.graph
 		return m, nil
 
 	case errMsg:
@@ -380,6 +421,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Tag graph view
+	if m.activeView == viewTagGraph {
+		return m.handleTagGraphKey(msg)
+	}
+
 	// File browser views
 	if m.activeView == viewFileBrowser {
 		return m.handleBrowserKey(msg)
@@ -502,7 +548,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case key.Matches(msg, keys.Clear):
 		m.search.SetValue("")
-		m.filter = model.ItemFilter{Limit: 100}
+		m.filter = model.ItemFilter{Limit: pageSize}
+		m.page = 0
 		return m, m.fetchItems()
 	case key.Matches(msg, keys.FilterURL):
 		return m, m.toggleTypeFilter(model.TypeURL)
@@ -517,6 +564,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Help):
 		m.activeView = viewHelp
 		return m, nil
+	case key.Matches(msg, keys.TagGraph):
+		m.activeView = viewTagGraph
+		m.tagGraphCursor = 0
+		m.tagGraphOffset = 0
+		return m, nil
 	case key.Matches(msg, keys.Browse):
 		return m, m.initBrowser()
 	case key.Matches(msg, keys.Delete):
@@ -525,8 +577,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeView = viewDeleteConfirm
 		}
 		return m, nil
+	case key.Matches(msg, keys.NextPage):
+		if m.hasMore {
+			return m, m.fetchPage(m.page + 1)
+		}
+	case key.Matches(msg, keys.PrevPage):
+		if m.page > 0 {
+			return m, m.fetchPage(m.page - 1)
+		}
 	case key.Matches(msg, keys.Refresh):
-		return m, m.fetchItems()
+		return m, m.fetchPage(m.page)
 	}
 
 	return m, nil
@@ -556,20 +616,31 @@ func (m *Model) toggleTypeFilter(t model.ItemType) tea.Cmd {
 	return m.fetchItems()
 }
 
-func (m Model) fetchItems() tea.Cmd {
+func (m *Model) fetchPage(page int) tea.Cmd {
+	filter := m.filter
+	filter.Limit = pageSize + 1 // fetch one extra to detect if there are more
+	filter.Offset = page * pageSize
 	return func() tea.Msg {
 		var items []model.Item
 		var err error
-		if m.filter.Query != "" {
-			items, err = m.store.SearchItems(context.Background(), m.filter)
+		if filter.Query != "" {
+			items, err = m.store.SearchItems(context.Background(), filter)
 		} else {
-			items, err = m.store.ListItems(context.Background(), m.filter)
+			items, err = m.store.ListItems(context.Background(), filter)
 		}
 		if err != nil {
 			return errMsg(err)
 		}
-		return itemsMsg(items)
+		hasMore := len(items) > pageSize
+		if hasMore {
+			items = items[:pageSize]
+		}
+		return pageMsg{items: items, page: page, hasMore: hasMore}
 	}
+}
+
+func (m Model) fetchItems() tea.Cmd {
+	return m.fetchPage(0)
 }
 
 func (m Model) View() string {
@@ -596,6 +667,8 @@ func (m Model) View() string {
 		return m.viewStashConfirm()
 	case viewStashDetails:
 		return m.viewStashDetails()
+	case viewTagGraph:
+		return m.viewTagGraph()
 	default:
 		return m.viewList()
 	}
@@ -750,7 +823,10 @@ func (m Model) viewHelp() string {
 		{"1-5", "Filter by type (urls, snippets, files, images, emails)"},
 		{"j/k or ↑/↓", "Navigate items"},
 		{"enter", "View item detail"},
+		{"]", "Next page"},
+		{"[", "Previous page"},
 		{"b", "Open file browser to stash files"},
+		{"g", "Tag graph — browse tag connections"},
 		{"o", "Open item in default application"},
 		{"d", "Delete item (with confirmation)"},
 		{"l", "Link current item to another"},
@@ -794,8 +870,12 @@ func (m Model) deleteCurrentItem() tea.Cmd {
 }
 
 func (m Model) statusBar() string {
-	left := fmt.Sprintf(" %d items", len(m.items))
-	right := " /:search  1-5:filter  b:browse  r:refresh  o:open  d:delete  ?:help  q:quit "
+	pageInfo := fmt.Sprintf(" p%d", m.page+1)
+	if m.hasMore {
+		pageInfo += "+"
+	}
+	left := fmt.Sprintf(" %d items %s", len(m.items), pageInfo)
+	right := " [/]:page  /:search  b:browse  g:graph  ?:help  q:quit "
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
 		gap = 0
@@ -1046,6 +1126,18 @@ func (m *Model) renderDetail(item *model.Item, width int) string {
 			names[i] = t.Name
 		}
 		b.WriteString(detailLabel.Render("Tags:     ") + strings.Join(names, ", ") + "\n")
+
+		// Related tags from co-occurrence graph
+		if m.tagGraph != nil {
+			related := m.relatedTags(item)
+			if len(related) > 0 {
+				var parts []string
+				for _, r := range related {
+					parts = append(parts, fmt.Sprintf("%s %s", tagStyle.Render(r.name), dimStyle.Render(fmt.Sprintf("(%d)", r.weight))))
+				}
+				b.WriteString(detailLabel.Render("Related:  ") + strings.Join(parts, "  ") + "\n")
+			}
+		}
 	}
 	if len(item.Collections) > 0 {
 		names := make([]string, len(item.Collections))
@@ -1186,6 +1278,180 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+func (m *Model) handleTagGraphKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Escape), key.Matches(msg, keys.Quit):
+		m.activeView = viewList
+		return m, nil
+	case key.Matches(msg, keys.Help):
+		m.activeView = viewHelp
+		return m, nil
+	case key.Matches(msg, keys.Up):
+		if m.tagGraphCursor > 0 {
+			m.tagGraphCursor--
+			if m.tagGraphCursor < m.tagGraphOffset {
+				m.tagGraphOffset = m.tagGraphCursor
+			}
+		}
+	case key.Matches(msg, keys.Down):
+		if m.tagGraph != nil && m.tagGraphCursor < len(m.tagGraph.Nodes)-1 {
+			m.tagGraphCursor++
+			if m.tagGraphCursor >= m.tagGraphOffset+m.listRows {
+				m.tagGraphOffset = m.tagGraphCursor - m.listRows + 1
+			}
+		}
+	case key.Matches(msg, keys.Enter):
+		// Select tag → filter list by it
+		if m.tagGraph != nil && m.tagGraphCursor < len(m.tagGraph.Nodes) {
+			tag := m.tagGraph.Nodes[m.tagGraphCursor].Name
+			m.filter.Tags = []string{tag}
+			m.filter.Limit = pageSize
+			m.page = 0
+			m.activeView = viewList
+			return m, m.fetchItems()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewTagGraph() string {
+	header := headerStyle.Width(m.width).Render("  Tag Graph  (enter:filter by tag  q:back)")
+
+	var b strings.Builder
+	b.WriteString(header + "\n")
+
+	if m.tagGraph == nil || len(m.tagGraph.Nodes) == 0 {
+		b.WriteString(dimStyle.Render("  No tags found.") + "\n")
+		return b.String()
+	}
+
+	// Build adjacency for the selected tag
+	selectedTag := ""
+	if m.tagGraphCursor < len(m.tagGraph.Nodes) {
+		selectedTag = m.tagGraph.Nodes[m.tagGraphCursor].Name
+	}
+
+	// Find connections for the selected tag
+	connections := make(map[string]int)
+	for _, e := range m.tagGraph.Edges {
+		if e.TagA == selectedTag {
+			connections[e.TagB] = e.Weight
+		} else if e.TagB == selectedTag {
+			connections[e.TagA] = e.Weight
+		}
+	}
+
+	// Render node list
+	end := m.tagGraphOffset + m.listRows - 2 // reserve space for connections
+	if end > len(m.tagGraph.Nodes) {
+		end = len(m.tagGraph.Nodes)
+	}
+	for i := m.tagGraphOffset; i < end; i++ {
+		node := m.tagGraph.Nodes[i]
+		isCursor := i == m.tagGraphCursor
+
+		count := fmt.Sprintf("%d items", node.Count)
+
+		// Connection indicator
+		connStr := ""
+		if w, ok := connections[node.Name]; ok && node.Name != selectedTag {
+			connStr = fmt.Sprintf("  %s", tagStyle.Render(fmt.Sprintf("↔ %d shared", w)))
+		}
+
+		if isCursor {
+			line := fmt.Sprintf(" ● %s  %s%s", node.Name, count, "")
+			b.WriteString(renderSelected(line, m.width))
+		} else {
+			marker := " ·"
+			if _, ok := connections[node.Name]; ok && node.Name != selectedTag {
+				marker = " ◦"
+			}
+			line := fmt.Sprintf(" %s %s  %s%s", marker, node.Name, dimStyle.Render(count), connStr)
+			b.WriteString(" " + line)
+		}
+		b.WriteString("\n")
+	}
+
+	// Pad
+	used := strings.Count(b.String(), "\n")
+	for i := used; i < m.height-3; i++ {
+		b.WriteString("\n")
+	}
+
+	// Show connections summary for selected tag
+	if selectedTag != "" && len(connections) > 0 {
+		var parts []string
+		// Sort by weight
+		type kv struct {
+			k string
+			v int
+		}
+		var sorted []kv
+		for k, v := range connections {
+			sorted = append(sorted, kv{k, v})
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
+		for _, s := range sorted {
+			if len(parts) >= 10 {
+				break
+			}
+			parts = append(parts, fmt.Sprintf("%s(%d)", s.k, s.v))
+		}
+		connLine := detailLabel.Render("  " + selectedTag + " → ") + strings.Join(parts, "  ")
+		b.WriteString(connLine + "\n")
+	}
+
+	// Status
+	left := fmt.Sprintf(" %d tags, %d connections", len(m.tagGraph.Nodes), len(m.tagGraph.Edges))
+	right := " j/k:navigate  enter:filter  q:back "
+	gap := m.width - len(left) - len(right)
+	if gap < 0 {
+		gap = 0
+	}
+	b.WriteString(statusStyle.Width(m.width).Render(left + strings.Repeat(" ", gap) + right))
+
+	return b.String()
+}
+
+type relatedTag struct {
+	name   string
+	weight int
+}
+
+func (m *Model) relatedTags(item *model.Item) []relatedTag {
+	if m.tagGraph == nil || len(item.Tags) == 0 {
+		return nil
+	}
+
+	// Collect this item's tag names
+	itemTags := make(map[string]bool)
+	for _, t := range item.Tags {
+		itemTags[t.Name] = true
+	}
+
+	// Find related tags via graph edges
+	weights := make(map[string]int)
+	for _, e := range m.tagGraph.Edges {
+		if itemTags[e.TagA] && !itemTags[e.TagB] {
+			weights[e.TagB] += e.Weight
+		} else if itemTags[e.TagB] && !itemTags[e.TagA] {
+			weights[e.TagA] += e.Weight
+		}
+	}
+
+	var result []relatedTag
+	for name, w := range weights {
+		result = append(result, relatedTag{name: name, weight: w})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].weight > result[j].weight
+	})
+	if len(result) > 8 {
+		result = result[:8]
+	}
+	return result
 }
 
 func isArchiveMIME(mimeType string) bool {

@@ -17,6 +17,9 @@ type keyMap struct {
 	LinkItem      key.Binding
 	UnlinkItem    key.Binding
 	Help          key.Binding
+	NextPage      key.Binding
+	PrevPage      key.Binding
+	TagGraph      key.Binding
 	Browse        key.Binding
 	Toggle        key.Binding
 	SelectAll     key.Binding
@@ -83,6 +86,18 @@ var keys = keyMap{
 	Help: key.NewBinding(
 		key.WithKeys("?"),
 		key.WithHelp("?", "help"),
+	),
+	NextPage: key.NewBinding(
+		key.WithKeys("]"),
+		key.WithHelp("]", "next page"),
+	),
+	PrevPage: key.NewBinding(
+		key.WithKeys("["),
+		key.WithHelp("[", "prev page"),
+	),
+	TagGraph: key.NewBinding(
+		key.WithKeys("g"),
+		key.WithHelp("g", "tag graph"),
 	),
 	Browse: key.NewBinding(
 		key.WithKeys("b"),

@@ -87,8 +87,10 @@ stash ui
 | `open <id>` | Open in default application |
 | `link <id1> <id2>` | Create a link between two items |
 | `unlink <id1> <id2>` | Remove a link between two items |
-| `tag list` | List all tags |
+| `tag list` | List all tags (with item counts) |
 | `tag rename <old> <new>` | Rename a tag |
+| `tag graph` | Show tag co-occurrence graph data |
+| `import bookmarks <file>` | Import Chrome/Firefox bookmarks HTML |
 | `collection list` | List collections |
 | `collection create <name>` | Create a collection |
 | `collection show <name>` | Show items in a collection |
@@ -117,6 +119,7 @@ stash ui
 | `j`/`k` or arrows | Navigate |
 | `enter` | View detail |
 | `b` | File browser — browse, select, and stash files |
+| `g` | Tag graph — browse tag connections |
 | `o` | Open item externally |
 | `d` | Delete item (with confirmation) |
 | `l` | Link to another item |

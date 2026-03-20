@@ -16,8 +16,11 @@ type Store interface {
 	UpdateItem(ctx context.Context, item *model.Item) error
 	DeleteItem(ctx context.Context, id string) error
 
+	ExistsByURL(ctx context.Context, url string) (bool, error)
+
 	// Tags
 	ListTags(ctx context.Context) ([]model.Tag, error)
+	TagGraph(ctx context.Context) (*model.TagGraph, error)
 	RenameTag(ctx context.Context, oldName, newName string) error
 	AddTag(ctx context.Context, itemID, tag string) error
 	RemoveTag(ctx context.Context, itemID, tag string) error

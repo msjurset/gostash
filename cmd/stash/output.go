@@ -136,6 +136,24 @@ func printTags(tags []model.Tag) {
 	}
 }
 
+func printTagGraph(graph *model.TagGraph) {
+	if flagJSON {
+		printJSON(graph)
+		return
+	}
+	if len(graph.Edges) == 0 {
+		fmt.Println("No tag connections found.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TAG A\tTAG B\tWEIGHT")
+	for _, e := range graph.Edges {
+		fmt.Fprintf(w, "%s\t%s\t%d\n", e.TagA, e.TagB, e.Weight)
+	}
+	w.Flush()
+}
+
 func printCollections(cols []model.Collection) {
 	if flagJSON {
 		if cols == nil {

@@ -56,8 +56,9 @@ type Item struct {
 
 // Tag is a label applied to items.
 type Tag struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count,omitempty"`
 }
 
 // Collection is a named group of items.
@@ -74,6 +75,19 @@ type Link struct {
 	Type      ItemType `json:"type"`
 	Label     string   `json:"label,omitempty"`
 	Direction string   `json:"direction"` // "none", "outgoing", "incoming"
+}
+
+// TagEdge represents a co-occurrence between two tags.
+type TagEdge struct {
+	TagA   string `json:"tag_a"`
+	TagB   string `json:"tag_b"`
+	Weight int    `json:"weight"`
+}
+
+// TagGraph is the full tag co-occurrence graph.
+type TagGraph struct {
+	Nodes []Tag     `json:"nodes"`
+	Edges []TagEdge `json:"edges"`
 }
 
 // ItemFilter holds query parameters for listing and searching items.

@@ -14,6 +14,7 @@ _stash() {
         'collection:Manage collections'
         'link:Create a link between two items'
         'unlink:Remove a link between two items'
+        'import:Import items from external sources'
         'ui:Interactive TUI for browsing and searching'
         'man:Display the stash manual page'
         'help:Help about any command'
@@ -106,11 +107,40 @@ _stash() {
                 '--collection=[Collection]:collection:' \
                 '1:id:'
             ;;
+        import)
+            local -a import_commands
+            import_commands=(
+                'bookmarks:Import Chrome/Firefox bookmarks HTML'
+            )
+            _arguments -C \
+                '(- *)--help[Show help]' \
+                '1: :->subcmd' \
+                '*:: :->subargs'
+            case $state in
+            subcmd)
+                _describe 'import command' import_commands
+                ;;
+            subargs)
+                case $words[1] in
+                bookmarks)
+                    _arguments \
+                        '*-T+[Extra tag]:tag:' \
+                        '*--tag=[Extra tag]:tag:' \
+                        '-c+[Collection]:collection:' \
+                        '--collection=[Collection]:collection:' \
+                        '--dry-run[Preview without saving]' \
+                        '1:bookmarks file:_files -g "*.html"'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
         tag)
             local -a tag_commands
             tag_commands=(
                 'list:List all tags'
                 'rename:Rename a tag'
+                'graph:Show tag co-occurrence graph'
             )
             _arguments -C \
                 '(- *)--help[Show help]' \

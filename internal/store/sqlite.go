@@ -264,11 +264,23 @@ func (s *SQLiteStore) DeleteItem(ctx context.Context, id string) error {
 	return nil
 }
 
+// ExistsByURL checks whether an item with the given URL already exists.
+func (s *SQLiteStore) ExistsByURL(ctx context.Context, url string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM items WHERE url = ?`, url).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check url: %w", err)
+	}
+	return count > 0, nil
+}
+
 // ListTags returns all tags with their usage counts.
 func (s *SQLiteStore) ListTags(ctx context.Context) ([]model.Tag, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.name FROM tags t
-		WHERE EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id = t.id)
+		SELECT t.id, t.name, COUNT(it.item_id) AS count
+		FROM tags t
+		JOIN item_tags it ON it.tag_id = t.id
+		GROUP BY t.id, t.name
 		ORDER BY t.name`)
 	if err != nil {
 		return nil, fmt.Errorf("list tags: %w", err)
@@ -278,12 +290,47 @@ func (s *SQLiteStore) ListTags(ctx context.Context) ([]model.Tag, error) {
 	var tags []model.Tag
 	for rows.Next() {
 		var t model.Tag
-		if err := rows.Scan(&t.ID, &t.Name); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Count); err != nil {
 			return nil, fmt.Errorf("scan tag: %w", err)
 		}
 		tags = append(tags, t)
 	}
 	return tags, rows.Err()
+}
+
+// TagGraph returns the tag co-occurrence graph.
+func (s *SQLiteStore) TagGraph(ctx context.Context) (*model.TagGraph, error) {
+	nodes, err := s.ListTags(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t1.name, t2.name, COUNT(DISTINCT a.item_id) AS weight
+		FROM item_tags a
+		JOIN item_tags b ON a.item_id = b.item_id AND a.tag_id < b.tag_id
+		JOIN tags t1 ON t1.id = a.tag_id
+		JOIN tags t2 ON t2.id = b.tag_id
+		GROUP BY a.tag_id, b.tag_id
+		ORDER BY weight DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("tag graph edges: %w", err)
+	}
+	defer rows.Close()
+
+	var edges []model.TagEdge
+	for rows.Next() {
+		var e model.TagEdge
+		if err := rows.Scan(&e.TagA, &e.TagB, &e.Weight); err != nil {
+			return nil, fmt.Errorf("scan edge: %w", err)
+		}
+		edges = append(edges, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return &model.TagGraph{Nodes: nodes, Edges: edges}, nil
 }
 
 // RenameTag renames a tag across all items.

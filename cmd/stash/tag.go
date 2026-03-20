@@ -56,8 +56,29 @@ var tagRenameCmd = &cobra.Command{
 	},
 }
 
+var tagGraphCmd = &cobra.Command{
+	Use:   "graph",
+	Short: "Show tag co-occurrence graph data",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+
+		graph, err := s.TagGraph(context.Background())
+		if err != nil {
+			return err
+		}
+
+		printTagGraph(graph)
+		return nil
+	},
+}
+
 func init() {
 	tagCmd.AddCommand(tagListCmd)
 	tagCmd.AddCommand(tagRenameCmd)
+	tagCmd.AddCommand(tagGraphCmd)
 	rootCmd.AddCommand(tagCmd)
 }

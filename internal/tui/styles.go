@@ -15,6 +15,7 @@ var (
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("237")).
 			PaddingLeft(1).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderForeground(lipgloss.Color("62"))
@@ -63,4 +64,12 @@ var (
 	urlStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("75")).
 			Underline(true)
+
+	dirEntryStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("75")).
+			Bold(true)
+
+	selectedCheckStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("150")).
+				Bold(true)
 )

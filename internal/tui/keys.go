@@ -17,6 +17,9 @@ type keyMap struct {
 	LinkItem      key.Binding
 	UnlinkItem    key.Binding
 	Help          key.Binding
+	Browse        key.Binding
+	Toggle        key.Binding
+	SelectAll     key.Binding
 	FilterURL     key.Binding
 	FilterSnippet key.Binding
 	FilterFile    key.Binding
@@ -80,6 +83,18 @@ var keys = keyMap{
 	Help: key.NewBinding(
 		key.WithKeys("?"),
 		key.WithHelp("?", "help"),
+	),
+	Browse: key.NewBinding(
+		key.WithKeys("b"),
+		key.WithHelp("b", "file browser"),
+	),
+	Toggle: key.NewBinding(
+		key.WithKeys(" "),
+		key.WithHelp("space", "toggle select"),
+	),
+	SelectAll: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "select all"),
 	),
 	FilterURL: key.NewBinding(
 		key.WithKeys("1"),

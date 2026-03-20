@@ -1,4 +1,4 @@
-.TH STASH 1 "2026-03-19" "stash v0.4.0" "User Commands"
+.TH STASH 1 "2026-03-19" "stash v0.5.0" "User Commands"
 .SH NAME
 stash \- personal knowledge vault
 .SH SYNOPSIS
@@ -166,6 +166,10 @@ Navigate items.
 .B Enter
 View item detail.
 .TP
+.B b
+Open file browser for browsing, selecting, and batch stashing files and directories.
+Supports multi-select (space), select all (a), open (o), and directory navigation (h/l or arrows).
+.TP
 .B o
 Open item in default application. Archives are extracted to a temp directory.
 .TP
@@ -180,6 +184,9 @@ Unlink a linked item (select from list).
 .TP
 .B r
 Refresh item list.
+.TP
+.B ?
+Show help overlay with all keyboard shortcuts.
 .TP
 .B q
 Quit (list view) or go back (detail view).

@@ -36,6 +36,9 @@ const (
 	viewUnlinkSelect
 	viewDeleteConfirm
 	viewHelp
+	viewFileBrowser
+	viewStashConfirm
+	viewStashDetails
 )
 
 // Model is the top-level bubbletea model.
@@ -73,6 +76,23 @@ type Model struct {
 	// delete confirmation
 	deleteReturnView view
 
+	// file browser state
+	browserDir      string
+	browserEntries  []browserEntry
+	browserCursor   int
+	browserOffset   int
+	browserSelected map[string]bool
+
+	// stash form state
+	stashMode     int
+	detailTitle   textinput.Model
+	detailTags    textinput.Model
+	detailNote    textinput.Model
+	detailDelete  bool
+	detailFocus   int
+	detailQueue   []string
+	detailCurrent int
+
 	err error
 }
 
@@ -99,13 +119,29 @@ func New(s store.Store, fs *filestore.FileStore) Model {
 	ll.Placeholder = "Label (Enter to skip)..."
 	ll.CharLimit = 256
 
+	dt := textinput.New()
+	dt.Placeholder = "Title..."
+	dt.CharLimit = 256
+
+	dtags := textinput.New()
+	dtags.Placeholder = "Comma-separated tags..."
+	dtags.CharLimit = 256
+
+	dn := textinput.New()
+	dn.Placeholder = "Optional note..."
+	dn.CharLimit = 512
+
 	return Model{
-		store:      s,
-		files:      fs,
-		search:     ti,
-		linkSearch: ls,
-		linkLabel:  ll,
-		filter:     model.ItemFilter{Limit: 100},
+		store:           s,
+		files:           fs,
+		search:          ti,
+		linkSearch:      ls,
+		linkLabel:       ll,
+		filter:          model.ItemFilter{Limit: 100},
+		detailTitle:     dt,
+		detailTags:      dtags,
+		detailNote:      dn,
+		browserSelected: make(map[string]bool),
 	}
 }
 
@@ -186,6 +222,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case browserLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.browserDir = msg.dir
+			m.browserEntries = msg.entries
+			m.browserCursor = 0
+			m.browserOffset = 0
+			m.err = nil
+		}
+		return m, nil
+
+	case stashDoneMsg:
+		return m.handleStashDone(msg)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -205,6 +256,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.activeView == viewLinkLabel {
 		var cmd tea.Cmd
 		m.linkLabel, cmd = m.linkLabel.Update(msg)
+		return m, cmd
+	}
+
+	if m.activeView == viewStashDetails {
+		var cmd tea.Cmd
+		switch m.detailFocus {
+		case 0:
+			m.detailTitle, cmd = m.detailTitle.Update(msg)
+		case 1:
+			m.detailTags, cmd = m.detailTags.Update(msg)
+		case 2:
+			m.detailNote, cmd = m.detailNote.Update(msg)
+		}
 		return m, cmd
 	}
 
@@ -314,6 +378,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.activeView == viewHelp {
 		m.activeView = viewList
 		return m, nil
+	}
+
+	// File browser views
+	if m.activeView == viewFileBrowser {
+		return m.handleBrowserKey(msg)
+	}
+	if m.activeView == viewStashConfirm {
+		return m.handleStashConfirmKey(msg)
+	}
+	if m.activeView == viewStashDetails {
+		return m.handleStashDetailsKey(msg)
 	}
 
 	// Delete confirmation mode
@@ -442,6 +517,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Help):
 		m.activeView = viewHelp
 		return m, nil
+	case key.Matches(msg, keys.Browse):
+		return m, m.initBrowser()
 	case key.Matches(msg, keys.Delete):
 		if len(m.items) > 0 {
 			m.deleteReturnView = viewList
@@ -513,6 +590,12 @@ func (m Model) View() string {
 		return m.viewDeleteConfirm()
 	case viewHelp:
 		return m.viewHelp()
+	case viewFileBrowser:
+		return m.viewFileBrowser()
+	case viewStashConfirm:
+		return m.viewStashConfirm()
+	case viewStashDetails:
+		return m.viewStashDetails()
 	default:
 		return m.viewList()
 	}
@@ -566,7 +649,7 @@ func (m Model) viewList() string {
 
 			line := formatListItem(item, m.width-4, selected)
 			if selected {
-				b.WriteString(selectedStyle.Render(line))
+				b.WriteString(renderSelected(line, m.width))
 			} else {
 				b.WriteString("  " + line)
 			}
@@ -605,10 +688,11 @@ func (m Model) viewLinkSearch() string {
 			if len(id) > 10 {
 				id = id[:10]
 			}
-			line := fmt.Sprintf(" %s %s  %s", typeIcon(it.Type), it.Title, dimStyle.Render(id))
 			if i == m.linkCursor {
-				b.WriteString(selectedStyle.Render(line))
+				line := fmt.Sprintf(" %s %s  %s", typeIconPlain(it.Type), it.Title, id)
+				b.WriteString(renderSelected(line, m.width))
 			} else {
+				line := fmt.Sprintf(" %s %s  %s", typeIcon(it.Type), it.Title, dimStyle.Render(id))
 				b.WriteString("  " + line)
 			}
 			b.WriteString("\n")
@@ -666,6 +750,7 @@ func (m Model) viewHelp() string {
 		{"1-5", "Filter by type (urls, snippets, files, images, emails)"},
 		{"j/k or ↑/↓", "Navigate items"},
 		{"enter", "View item detail"},
+		{"b", "Open file browser to stash files"},
 		{"o", "Open item in default application"},
 		{"d", "Delete item (with confirmation)"},
 		{"l", "Link current item to another"},
@@ -710,7 +795,7 @@ func (m Model) deleteCurrentItem() tea.Cmd {
 
 func (m Model) statusBar() string {
 	left := fmt.Sprintf(" %d items", len(m.items))
-	right := " /:search  1-5:filter  r:refresh  o:open  d:delete  ?:help  q:quit "
+	right := " /:search  1-5:filter  b:browse  r:refresh  o:open  d:delete  ?:help  q:quit "
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
 		gap = 0
@@ -719,12 +804,36 @@ func (m Model) statusBar() string {
 }
 
 func formatListItem(item *model.Item, width int, selected bool) string {
-	icon := typeIcon(item.Type)
 	title := item.Title
 	if title == "" {
 		title = "(untitled)"
 	}
 
+	age := relTime(item.CreatedAt)
+
+	if selected {
+		// Plain text — selectedStyle handles all coloring
+		icon := typeIconPlain(item.Type)
+		tags := ""
+		if len(item.Tags) > 0 {
+			names := make([]string, len(item.Tags))
+			for i, t := range item.Tags {
+				names[i] = t.Name
+			}
+			tags = " [" + strings.Join(names, ", ") + "]"
+		}
+		maxTitle := width - len(icon) - len(age) - len(tags) - 6
+		if maxTitle < 10 {
+			maxTitle = 10
+		}
+		if len(title) > maxTitle {
+			title = title[:maxTitle-3] + "..."
+		}
+		return fmt.Sprintf("%s %s%s  %s", icon, title, tags, age)
+	}
+
+	// Styled version for non-cursor rows
+	icon := typeIcon(item.Type)
 	tags := ""
 	if len(item.Tags) > 0 {
 		names := make([]string, len(item.Tags))
@@ -733,12 +842,9 @@ func formatListItem(item *model.Item, width int, selected bool) string {
 		}
 		tags = " " + tagStyle.Render("["+strings.Join(names, ", ")+"]")
 	}
-
-	age := relTime(item.CreatedAt)
 	ageStr := dimStyle.Render(age)
 
-	// Truncate title to fit
-	maxTitle := width - len(icon) - len(age) - 6
+	maxTitle := width - len(stripAnsi(icon)) - len(age) - 6
 	if len(item.Tags) > 0 {
 		tagLen := 0
 		for _, t := range item.Tags {
@@ -752,9 +858,24 @@ func formatListItem(item *model.Item, width int, selected bool) string {
 	if len(title) > maxTitle {
 		title = title[:maxTitle-3] + "..."
 	}
-
-	_ = selected
 	return fmt.Sprintf("%s %s%s  %s", icon, title, tags, ageStr)
+}
+
+func typeIconPlain(t model.ItemType) string {
+	switch t {
+	case model.TypeURL:
+		return "URL"
+	case model.TypeSnippet:
+		return "SNP"
+	case model.TypeFile:
+		return "FIL"
+	case model.TypeImage:
+		return "IMG"
+	case model.TypeEmail:
+		return "EML"
+	default:
+		return "???"
+	}
 }
 
 func typeIcon(t model.ItemType) string {
@@ -957,18 +1078,16 @@ func (m *Model) renderDetail(item *model.Item, width int) string {
 	b.WriteString(detailLabel.Render("Created:  ") + item.CreatedAt.Format(time.RFC3339) + "\n")
 	b.WriteString(detailLabel.Render("Updated:  ") + item.UpdatedAt.Format(time.RFC3339) + "\n")
 
-	// Image preview
+	// Image preview via asciizer
 	if item.Type == model.TypeImage && item.StorePath != "" && m.files != nil {
-		b.WriteString("\n")
 		filePath := m.files.Path(item.StorePath)
-		if supportsGraphics() {
-			if img, err := renderImage(filePath, width/2, 25); err == nil {
-				b.WriteString(img)
-			} else {
-				b.WriteString(fallbackText() + "\n")
-			}
+		if ascii, err := renderAsciiImage(filePath, width*3/4); err == nil && ascii != "" {
+			b.WriteString("\n")
+			b.WriteString(ascii)
+			b.WriteString("\n")
 		} else {
-			b.WriteString(fallbackText() + "\n")
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  [Press o to open image in viewer]") + "\n")
 		}
 	}
 

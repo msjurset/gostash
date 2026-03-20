@@ -9,7 +9,7 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 - **Tags & collections** — Organize items with tags and named collections
 - **Item linking** — Create labeled relationships between items
 - **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages
-- **Interactive TUI** — Browse, search, link, and delete with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea), with inline image preview (Kitty protocol)
+- **Interactive TUI** — Browse, search, link, and delete with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea), with ASCII art image preview and built-in file browser for batch stashing
 - **Configurable** — TOML config file at `~/.config/stash/config.toml`
 - **JSON output** — Script-friendly `--json` flag on all commands
 - **Shell completions** — Bash and Zsh
@@ -116,11 +116,13 @@ stash ui
 | `1`–`5` | Filter by type (urls, snippets, files, images, emails) |
 | `j`/`k` or arrows | Navigate |
 | `enter` | View detail |
+| `b` | File browser — browse, select, and stash files |
 | `o` | Open item externally |
 | `d` | Delete item (with confirmation) |
 | `l` | Link to another item |
 | `u` | Unlink an item |
 | `r` | Refresh |
+| `?` | Help overlay |
 | `q` | Quit / back |
 | `ctrl+c` | Force quit |
 | `ctrl+l` | Clear search |

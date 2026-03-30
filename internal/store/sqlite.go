@@ -69,6 +69,12 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// Checkpoint flushes the WAL to the main database file.
+func (s *SQLiteStore) Checkpoint() error {
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // prefixQuery converts a plain search string into an FTS5 prefix query
 // so that partial words match. "hello wor" becomes "hello* wor*".
 // Words that already end with * are left as-is.
@@ -272,6 +278,15 @@ func (s *SQLiteStore) ExistsByURL(ctx context.Context, url string) (bool, error)
 		return false, fmt.Errorf("check url: %w", err)
 	}
 	return count > 0, nil
+}
+
+// ListURLsWithoutContent returns URL items that have no extracted text.
+func (s *SQLiteStore) ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := fmt.Sprintf(`SELECT i.* FROM items i WHERE i.type = 'link' AND i.extracted_text = '' ORDER BY i.created_at DESC LIMIT %d`, limit)
+	return s.queryItems(ctx, q, nil)
 }
 
 // ListTags returns all tags with their usage counts.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	readability "github.com/go-shiori/go-readability"
 )
 
@@ -20,7 +21,7 @@ type Result struct {
 	MimeType      string
 }
 
-// URL fetches a URL, extracts title and readable text.
+// URL fetches a URL, extracts title and readable text as Markdown.
 func URL(rawURL string) (*Result, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -56,15 +57,59 @@ func URL(rawURL string) (*Result, error) {
 		MimeType: ct,
 	}
 
-	// Extract readable text from HTML
+	// Extract readable content from HTML and convert to Markdown
 	if strings.Contains(ct, "html") {
 		parsed, _ := url.Parse(rawURL)
 		article, err := readability.FromReader(strings.NewReader(string(body)), parsed)
 		if err == nil {
 			result.Title = article.Title
-			result.ExtractedText = article.TextContent
+			result.ExtractedText = htmlToMarkdown(article.Content)
 		}
 	}
 
 	return result, nil
+}
+
+// htmlToMarkdown converts cleaned HTML to Markdown.
+func htmlToMarkdown(html string) string {
+	md, err := htmltomarkdown.ConvertString(html)
+	if err != nil {
+		// Fall back to stripping tags
+		return stripHTMLTags(html)
+	}
+	// Clean up excessive blank lines
+	lines := strings.Split(md, "\n")
+	var result []string
+	blankCount := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blankCount++
+			if blankCount <= 2 {
+				result = append(result, "")
+			}
+		} else {
+			blankCount = 0
+			result = append(result, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
+func stripHTMLTags(s string) string {
+	var result strings.Builder
+	inTag := false
+	for _, r := range s {
+		if r == '<' {
+			inTag = true
+			continue
+		}
+		if r == '>' {
+			inTag = false
+			continue
+		}
+		if !inTag {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }

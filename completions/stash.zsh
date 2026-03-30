@@ -15,6 +15,9 @@ _stash() {
         'link:Create a link between two items'
         'unlink:Remove a link between two items'
         'import:Import items from external sources'
+        'backup:Create a backup of database and files'
+        'restore:Restore from a backup'
+        'refresh:Re-fetch content for a URL item'
         'ui:Interactive TUI for browsing and searching'
         'man:Display the stash manual page'
         'help:Help about any command'
@@ -134,6 +137,22 @@ _stash() {
                 esac
                 ;;
             esac
+            ;;
+        backup)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--list[List available backups]' \
+                '--db-only[Database only, skip files]'
+            ;;
+        restore)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '1:backup file:_files -g "*.db"'
+            ;;
+        refresh)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '1:id:'
             ;;
         tag)
             local -a tag_commands

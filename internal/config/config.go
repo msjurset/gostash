@@ -14,6 +14,7 @@ type Config struct {
 	DataDir     string `toml:"data_dir"`
 	DBPath      string `toml:"db_path"`
 	FilesDir    string `toml:"files_dir"`
+	BackupDir   string `toml:"backup_dir"`
 	ImageViewer string `toml:"image_viewer"`
 }
 
@@ -66,6 +67,7 @@ func load() Config {
 	c.DataDir = expandHome(c.DataDir)
 	c.DBPath = expandHome(c.DBPath)
 	c.FilesDir = expandHome(c.FilesDir)
+	c.BackupDir = expandHome(c.BackupDir)
 
 	// Env var overrides config file for data_dir
 	if d := os.Getenv("STASH_DIR"); d != "" {
@@ -81,6 +83,9 @@ func load() Config {
 	}
 	if c.FilesDir == "" {
 		c.FilesDir = filepath.Join(c.DataDir, "files")
+	}
+	if c.BackupDir == "" {
+		c.BackupDir = filepath.Join(c.DataDir, "backups")
 	}
 
 	return c
@@ -107,6 +112,11 @@ func FilesDir() string {
 	return Get().FilesDir
 }
 
+// BackupDir returns the path to the backup directory.
+func BackupDir() string {
+	return Get().BackupDir
+}
+
 // EnsureDir creates the stash data directory if it doesn't exist.
 func EnsureDir() error {
 	return os.MkdirAll(Dir(), 0755)
@@ -122,9 +132,10 @@ func WriteDefault() error {
 		return err
 	}
 	content := `# Stash configuration
-# data_dir = "~/.stash"
-# db_path  = "~/.stash/stash.db"
-# files_dir = "~/.stash/files"
+# data_dir   = "~/.stash"
+# db_path    = "~/.stash/stash.db"
+# files_dir  = "~/.stash/files"
+# backup_dir = "~/.stash/backups"
 # image_viewer = ""
 `
 	return os.WriteFile(path, []byte(content), 0644)

@@ -17,6 +17,7 @@ type Store interface {
 	DeleteItem(ctx context.Context, id string) error
 
 	ExistsByURL(ctx context.Context, url string) (bool, error)
+	ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error)
 
 	// Tags
 	ListTags(ctx context.Context) ([]model.Tag, error)
@@ -39,5 +40,6 @@ type Store interface {
 	RemoveFromCollection(ctx context.Context, itemID, collectionName string) error
 	ListCollectionItems(ctx context.Context, name string, filter model.ItemFilter) ([]model.Item, error)
 
+	Checkpoint() error
 	Close() error
 }

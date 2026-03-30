@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open link unlink import tag collection ui man help"
+    local commands="add search list show edit delete open link unlink import backup restore refresh tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -67,6 +67,16 @@ _stash() {
             else
                 COMPREPLY=($(compgen -f -- "$cur"))
             fi
+        fi
+        ;;
+    backup)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--list --db-only --help" -- "$cur"))
+        fi
+        ;;
+    restore)
+        if [[ "$cur" != -* ]]; then
+            COMPREPLY=($(compgen -f -- "$cur"))
         fi
         ;;
     tag)

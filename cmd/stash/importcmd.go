@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/fetch"
 	"github.com/msjurset/gostash/internal/model"
 
 	"github.com/oklog/ulid/v2"
@@ -38,8 +39,70 @@ func init() {
 	importBookmarksCmd.Flags().StringSliceP("tag", "T", nil, "Extra tags to add to all imported bookmarks")
 	importBookmarksCmd.Flags().StringP("collection", "c", "", "Add all imports to this collection")
 	importBookmarksCmd.Flags().Bool("dry-run", false, "Preview what would be imported without saving")
+	importBackfillCmd.Flags().IntP("limit", "l", 50, "Max items to process")
 	importCmd.AddCommand(importBookmarksCmd)
+	importCmd.AddCommand(importBackfillCmd)
 	rootCmd.AddCommand(importCmd)
+}
+
+var importBackfillCmd = &cobra.Command{
+	Use:   "backfill",
+	Short: "Fetch content for URL items missing extracted text",
+	Long:  `Finds URL items without extracted text and fetches their page content.`,
+	RunE:  runImportBackfill,
+}
+
+func runImportBackfill(cmd *cobra.Command, args []string) error {
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	ctx := context.Background()
+
+	items, err := s.ListURLsWithoutContent(ctx, limit)
+	if err != nil {
+		return err
+	}
+
+	if len(items) == 0 {
+		fmt.Println("No URL items need backfill.")
+		return nil
+	}
+
+	fmt.Printf("Found %d URL items without content. Fetching...\n", len(items))
+
+	var fetched, failed int
+	for i, item := range items {
+		fmt.Printf("  [%d/%d] %s ... ", i+1, len(items), truncate(item.Title, 50))
+
+		result, err := fetch.URL(item.URL)
+		if err != nil {
+			fmt.Printf("failed: %v\n", err)
+			failed++
+			continue
+		}
+
+		item.ExtractedText = result.ExtractedText
+		item.MimeType = result.MimeType
+		if result.Title != "" && (item.Title == "" || item.Title == item.URL) {
+			item.Title = result.Title
+		}
+
+		if err := s.UpdateItem(ctx, &item); err != nil {
+			fmt.Printf("save failed: %v\n", err)
+			failed++
+			continue
+		}
+
+		fetched++
+		fmt.Println("ok")
+	}
+
+	fmt.Printf("\nDone: %d fetched, %d failed, %d total\n", fetched, failed, len(items))
+	return nil
 }
 
 type bookmark struct {

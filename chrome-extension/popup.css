@@ -1,0 +1,398 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  background: #1e1e1e;
+}
+
+#app {
+  padding: 12px;
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+#header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+
+#tabs {
+  display: flex;
+  gap: 2px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.tab.active {
+  background: #4a9eff;
+  color: #fff;
+}
+
+.tab:hover:not(.active) {
+  color: #e0e0e0;
+}
+
+#status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: transparent;
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+#status:empty {
+  display: none;
+}
+
+#status.exists {
+  background: #1565C0;
+  color: #fff;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#url-preview {
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+#page-title {
+  display: block;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+#page-url {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#snippet-preview {
+  background: #2a2a2a;
+  border: 1px solid #4a9eff;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+#snippet-preview label {
+  display: block;
+  font-size: 10px;
+  color: #4a9eff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+#snippet-text {
+  font-size: 12px;
+  color: #ccc;
+  line-height: 1.4;
+  max-height: 80px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.field {
+  margin-bottom: 8px;
+}
+
+.field label {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 3px;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: #4a9eff;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.field select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath fill='%23888' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+#actions {
+  margin-top: 10px;
+}
+
+button.primary {
+  width: 100%;
+  background: #4a9eff;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+button.primary:hover {
+  background: #3a8eef;
+}
+
+button.primary:active {
+  background: #2a7edf;
+}
+
+button.primary:disabled {
+  background: #3a3a3a;
+  color: #666;
+  cursor: default;
+}
+
+.tag-field {
+  position: relative;
+}
+
+.tag-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  max-height: 150px;
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.tag-dropdown.hidden {
+  display: none;
+}
+
+.tag-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.tag-option:hover,
+.tag-option.active {
+  background: #3a3a3a;
+}
+
+.tag-option .tag-name {
+  color: #e0e0e0;
+}
+
+.tag-option .tag-count {
+  color: #666;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+#message {
+  margin-top: 8px;
+  font-size: 12px;
+  text-align: center;
+  min-height: 16px;
+}
+
+#message.success {
+  color: #4CAF50;
+}
+
+#message.error {
+  color: #F44336;
+}
+
+/* Search View */
+
+.search-field {
+  position: relative;
+}
+
+.search-field input {
+  padding-right: 24px;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.search-clear:hover {
+  color: #e0e0e0;
+}
+
+#search-results {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.search-item {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.1s;
+}
+
+.search-item:hover {
+  background: #2a2a2a;
+}
+
+.search-item + .search-item {
+  border-top: 1px solid #2a2a2a;
+}
+
+.search-item-title {
+  display: block;
+  font-weight: 500;
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-item-url {
+  display: block;
+  font-size: 11px;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.search-item-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.search-item-tag {
+  font-size: 10px;
+  background: #333;
+  color: #aaa;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.search-item-type {
+  font-size: 10px;
+  color: #555;
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+#search-results .empty {
+  text-align: center;
+  color: #555;
+  padding: 20px;
+  font-size: 12px;
+}
+
+/* Tag Cloud */
+
+#tag-cloud {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 0;
+  line-height: 1.5;
+}
+
+.cloud-tag {
+  cursor: pointer;
+  transition: color 0.1s;
+}
+
+.cloud-tag:hover {
+  text-decoration: underline;
+}
+
+.cloud-sep {
+  color: #444;
+  font-size: 12px;
+}
+
+/* Size tiers */
+.cloud-tag.size-1 { font-size: 11px; color: #666; }
+.cloud-tag.size-2 { font-size: 13px; color: #888; }
+.cloud-tag.size-3 { font-size: 15px; color: #aaa; }
+.cloud-tag.size-4 { font-size: 18px; color: #ddd; }
+.cloud-tag.size-5 { font-size: 21px; color: #fff; }

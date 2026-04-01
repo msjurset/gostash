@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <div id="header">
+      <h1>Stash</h1>
+      <div id="tabs">
+        <button class="tab active" data-tab="stash">Save</button>
+        <button class="tab" data-tab="search">Search</button>
+      </div>
+    </div>
+
+    <!-- Stash View -->
+    <div id="stash-view">
+      <div id="status"></div>
+
+      <div id="url-preview">
+        <span id="page-title"></span>
+        <span id="page-url"></span>
+      </div>
+
+      <div id="snippet-preview" class="hidden">
+        <label>Selected Text</label>
+        <div id="snippet-text"></div>
+      </div>
+
+      <div class="field tag-field">
+        <label for="tags">Tags</label>
+        <input type="text" id="tags" placeholder="comma-separated" autocomplete="off">
+        <div id="tag-dropdown" class="tag-dropdown hidden"></div>
+      </div>
+
+      <div class="field">
+        <label for="notes">Notes</label>
+        <textarea id="notes" rows="2" placeholder="optional"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="collection">Collection</label>
+        <select id="collection">
+          <option value="">None</option>
+        </select>
+      </div>
+
+      <div id="actions">
+        <button id="stash-btn" class="primary">Stash It</button>
+      </div>
+
+      <div id="message"></div>
+    </div>
+
+    <!-- Search View -->
+    <div id="search-view" class="hidden">
+      <div class="field search-field">
+        <input type="text" id="search-input" placeholder="Search your stash... (tag:name to filter)" autocomplete="off">
+        <span id="search-clear" class="search-clear hidden">&times;</span>
+        <div id="search-tag-dropdown" class="tag-dropdown hidden"></div>
+      </div>
+      <div id="tag-cloud"></div>
+      <div id="search-results"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Stash",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1YKjV52omi4fVqpSPcT3IwQRiotpd7eeCZ7pXZuIN/TxnyX9zYcxQtQGTbAyp+gRZH5bFxDMy3+SCtZI+Zk/eNoK+Io19bQVD/0RLxFosxGpHdDXLqa91QPFsht9koHUi7Zpcsz0AYHMYNKoEus4GhHbQX5//J1OeawPZoINZhVtFGe+/VZkR1rGJ7Hrenqul9zgQ/QlaI2+80cDrP2szO27644Zk0r/BAC1jag9i1pCfX4zOvlUfPgVM00D1U1w7FHEpRJ3kfkwtaJ5ofxXio/92jmVRRWU0KD7lKAgh37E+GNf+5m9/06BM88S9MGZuCzwvJq6xLjtUZ494/wE9wIDAQAB",
+  "description": "Stash URLs, text snippets, and more to your personal knowledge vault.",
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "scripting",
+    "storage",
+    "nativeMessaging"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "omnibox": {
+    "keyword": "stash"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

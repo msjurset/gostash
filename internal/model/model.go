@@ -90,15 +90,87 @@ type TagGraph struct {
 	Edges []TagEdge `json:"edges"`
 }
 
+// StashStats holds aggregate statistics about the stash.
+type StashStats struct {
+	TotalItems   int            `json:"total_items"`
+	TypeCounts   map[string]int `json:"type_counts"`
+	TotalSize    int64          `json:"total_size_bytes"`
+	TagCount     int            `json:"tag_count"`
+	CollCount    int            `json:"collection_count"`
+	LinkCount    int            `json:"link_count"`
+	TopTags      []Tag          `json:"top_tags"`
+	OldestItem   *time.Time     `json:"oldest_item,omitempty"`
+	NewestItem   *time.Time     `json:"newest_item,omitempty"`
+	MonthCounts  []MonthCount   `json:"month_counts,omitempty"`
+}
+
+// MonthCount holds item count for a calendar month.
+type MonthCount struct {
+	Month string `json:"month"`
+	Count int    `json:"count"`
+}
+
+// CheckResult holds data hygiene findings.
+type CheckResult struct {
+	BrokenURLs     []CheckIssue `json:"broken_urls,omitempty"`
+	OrphanedFiles  []string     `json:"orphaned_files,omitempty"`
+	MissingFiles   []CheckIssue `json:"missing_files,omitempty"`
+	DuplicateHash  []DupeGroup  `json:"duplicate_hashes,omitempty"`
+}
+
+// CheckIssue identifies an item with a problem.
+type CheckIssue struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Detail string `json:"detail"`
+}
+
+// DupeGroup groups items sharing the same content hash.
+type DupeGroup struct {
+	Hash  string       `json:"hash"`
+	Items []CheckIssue `json:"items"`
+}
+
+// SavedSearch is a named, reusable search query with filter parameters.
+type SavedSearch struct {
+	ID     int64      `json:"id"`
+	Name   string     `json:"name"`
+	Query  string     `json:"query"`
+	Filter ItemFilter `json:"filter"`
+}
+
+// DupeResult groups items that are potential duplicates.
+type DupeResult struct {
+	Method     string       `json:"method"` // "hash", "url", "title"
+	Key        string       `json:"key"`
+	Similarity float64      `json:"similarity,omitempty"`
+	Items      []CheckIssue `json:"items"`
+}
+
 // ItemFilter holds query parameters for listing and searching items.
 type ItemFilter struct {
-	Query      string
-	Type       ItemType
-	Tags       []string
-	Collection string
-	LinkedTo   string
-	After      *time.Time
-	Before     *time.Time
-	Limit      int
-	Offset     int
+	Query      string     `json:"query,omitempty"`
+	Type       ItemType   `json:"type,omitempty"`
+	Tags       []string   `json:"tags,omitempty"`
+	Collection string     `json:"collection,omitempty"`
+	LinkedTo   string     `json:"linked_to,omitempty"`
+	After      *time.Time `json:"after,omitempty"`
+	Before     *time.Time `json:"before,omitempty"`
+	Limit      int        `json:"limit,omitempty"`
+	Offset     int        `json:"offset,omitempty"`
+}
+
+// Language returns the detected language from the item's metadata, or empty string.
+func (item *Item) Language() string {
+	if len(item.Metadata) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(item.Metadata, &m); err != nil {
+		return ""
+	}
+	if lang, ok := m["language"].(string); ok {
+		return lang
+	}
+	return ""
 }

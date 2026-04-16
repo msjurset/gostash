@@ -15,9 +15,14 @@ _stash() {
         'link:Create a link between two items'
         'unlink:Remove a link between two items'
         'import:Import items from external sources'
+        'bulk:Bulk operations on multiple items'
+        'stats:Show stash statistics'
+        'check:Check stash for data hygiene issues'
+        'dupes:Find duplicate items'
         'backup:Create a backup of database and files'
         'restore:Restore from a backup'
         'refresh:Re-fetch content for a URL item'
+        'chrome-host:Chrome Native Messaging host'
         'ui:Interactive TUI for browsing and searching'
         'man:Display the stash manual page'
         'help:Help about any command'
@@ -53,7 +58,14 @@ _stash() {
                 '1:source:_files'
             ;;
         search)
-            _arguments \
+            local -a search_commands
+            search_commands=(
+                'save:Save a search for later'
+                'list:List saved searches'
+                'run:Run a saved search'
+                'delete:Delete a saved search'
+            )
+            _arguments -C \
                 '(- *)--help[Show help]' \
                 '--type=[Filter by type]:type:(url snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
@@ -62,7 +74,32 @@ _stash() {
                 '--before=[Created before]:date:' \
                 '-l+[Max results]:limit:' \
                 '--limit=[Max results]:limit:' \
-                '1:query:'
+                '1: :->subcmd' \
+                '*:: :->subargs'
+            case $state in
+            subcmd)
+                _describe 'search command' search_commands
+                ;;
+            subargs)
+                case $words[1] in
+                save)
+                    _arguments \
+                        '--type=[Filter by type]:type:(url snippet file image email)' \
+                        '*--tag=[Filter by tag]:tag:' \
+                        '--collection=[Filter by collection]:collection:' \
+                        '--after=[Created after]:date:' \
+                        '--before=[Created before]:date:' \
+                        '-l+[Max results]:limit:' \
+                        '--limit=[Max results]:limit:' \
+                        '1:name:' \
+                        '2:query:'
+                    ;;
+                run|delete)
+                    _arguments '1:name:'
+                    ;;
+                esac
+                ;;
+            esac
             ;;
         list)
             _arguments \
@@ -75,7 +112,7 @@ _stash() {
                 '-l+[Max results]:limit:' \
                 '--limit=[Max results]:limit:'
             ;;
-        show|delete|open)
+        show|delete|open|refresh)
             _arguments \
                 '(- *)--help[Show help]' \
                 '1:id:'
@@ -114,6 +151,11 @@ _stash() {
             local -a import_commands
             import_commands=(
                 'bookmarks:Import Chrome/Firefox bookmarks HTML'
+                'pocket:Import Pocket HTML export'
+                'pinboard:Import Pinboard JSON export'
+                'notion:Import Notion export (zip or directory)'
+                'obsidian:Import Obsidian vault'
+                'backfill:Fetch content for URL items missing text'
             )
             _arguments -C \
                 '(- *)--help[Show help]' \
@@ -125,14 +167,144 @@ _stash() {
                 ;;
             subargs)
                 case $words[1] in
-                bookmarks)
+                bookmarks|pocket)
                     _arguments \
                         '*-T+[Extra tag]:tag:' \
                         '*--tag=[Extra tag]:tag:' \
                         '-c+[Collection]:collection:' \
                         '--collection=[Collection]:collection:' \
                         '--dry-run[Preview without saving]' \
-                        '1:bookmarks file:_files -g "*.html"'
+                        '1:file:_files -g "*.html"'
+                    ;;
+                pinboard)
+                    _arguments \
+                        '*-T+[Extra tag]:tag:' \
+                        '*--tag=[Extra tag]:tag:' \
+                        '-c+[Collection]:collection:' \
+                        '--collection=[Collection]:collection:' \
+                        '--dry-run[Preview without saving]' \
+                        '1:file:_files -g "*.json"'
+                    ;;
+                notion)
+                    _arguments \
+                        '*-T+[Extra tag]:tag:' \
+                        '*--tag=[Extra tag]:tag:' \
+                        '-c+[Collection]:collection:' \
+                        '--collection=[Collection]:collection:' \
+                        '--dry-run[Preview without saving]' \
+                        '1:path:_files'
+                    ;;
+                obsidian)
+                    _arguments \
+                        '*-T+[Extra tag]:tag:' \
+                        '*--tag=[Extra tag]:tag:' \
+                        '-c+[Collection]:collection:' \
+                        '--collection=[Collection]:collection:' \
+                        '--dry-run[Preview without saving]' \
+                        '1:vault path:_files -/'
+                    ;;
+                backfill)
+                    _arguments \
+                        '-l+[Max items]:limit:' \
+                        '--limit=[Max items]:limit:'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        bulk)
+            local -a bulk_commands
+            bulk_commands=(
+                'tag:Add or remove tags on multiple items'
+                'delete:Delete multiple items'
+                'collect:Add or remove items from a collection'
+            )
+            _arguments -C \
+                '(- *)--help[Show help]' \
+                '1: :->subcmd' \
+                '*:: :->subargs'
+            case $state in
+            subcmd)
+                _describe 'bulk command' bulk_commands
+                ;;
+            subargs)
+                case $words[1] in
+                tag)
+                    _arguments \
+                        '*--add-tag=[Tag to add]:tag:' \
+                        '*--remove-tag=[Tag to remove]:tag:' \
+                        '--query=[Search query]:query:' \
+                        '--type=[Filter by type]:type:(url snippet file image email)' \
+                        '*--tag=[Filter by tag]:tag:' \
+                        '--in-collection=[Filter by collection]:collection:' \
+                        '--after=[Created after]:date:' \
+                        '--before=[Created before]:date:' \
+                        '-l+[Max items]:limit:' \
+                        '--limit=[Max items]:limit:' \
+                        '*:id:'
+                    ;;
+                delete)
+                    _arguments \
+                        '(-y --yes)'{-y,--yes}'[Skip confirmation]' \
+                        '--query=[Search query]:query:' \
+                        '--type=[Filter by type]:type:(url snippet file image email)' \
+                        '*--tag=[Filter by tag]:tag:' \
+                        '--in-collection=[Filter by collection]:collection:' \
+                        '--after=[Created after]:date:' \
+                        '--before=[Created before]:date:' \
+                        '-l+[Max items]:limit:' \
+                        '--limit=[Max items]:limit:' \
+                        '*:id:'
+                    ;;
+                collect)
+                    _arguments \
+                        '-c+[Target collection]:collection:' \
+                        '--collection=[Target collection]:collection:' \
+                        '--remove[Remove from collection]' \
+                        '--query=[Search query]:query:' \
+                        '--type=[Filter by type]:type:(url snippet file image email)' \
+                        '*--tag=[Filter by tag]:tag:' \
+                        '--in-collection=[Filter by collection]:collection:' \
+                        '--after=[Created after]:date:' \
+                        '--before=[Created before]:date:' \
+                        '-l+[Max items]:limit:' \
+                        '--limit=[Max items]:limit:' \
+                        '*:id:'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        stats)
+            _arguments '(- *)--help[Show help]'
+            ;;
+        check)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--urls[Check for broken URLs]' \
+                '--files[Check for orphaned/missing files]' \
+                '--dupes[Check for duplicate content]'
+            ;;
+        dupes)
+            local -a dupes_commands
+            dupes_commands=(
+                'dismiss:Dismiss a duplicate pair'
+            )
+            _arguments -C \
+                '(- *)--help[Show help]' \
+                '--type=[Filter by type]:type:(url snippet file image email)' \
+                '--threshold=[Title similarity threshold]:threshold:' \
+                '--include-dismissed[Include previously dismissed pairs]' \
+                '1: :->subcmd' \
+                '*:: :->subargs'
+            case $state in
+            subcmd)
+                _describe 'dupes command' dupes_commands
+                ;;
+            subargs)
+                case $words[1] in
+                dismiss)
+                    _arguments '1:id1:' '2:id2:'
                     ;;
                 esac
                 ;;
@@ -149,10 +321,21 @@ _stash() {
                 '(- *)--help[Show help]' \
                 '1:backup file:_files -g "*.db"'
             ;;
-        refresh)
-            _arguments \
+        chrome-host)
+            local -a chrome_commands
+            chrome_commands=(
+                'install:Register native messaging host with Chrome'
+                'uninstall:Remove native messaging host manifest'
+            )
+            _arguments -C \
                 '(- *)--help[Show help]' \
-                '1:id:'
+                '1: :->subcmd' \
+                '*:: :->subargs'
+            case $state in
+            subcmd)
+                _describe 'chrome-host command' chrome_commands
+                ;;
+            esac
             ;;
         tag)
             local -a tag_commands

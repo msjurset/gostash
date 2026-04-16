@@ -17,6 +17,7 @@ import (
 
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/fetch"
+	"github.com/msjurset/gostash/internal/langdetect"
 	"github.com/msjurset/gostash/internal/model"
 
 	"github.com/oklog/ulid/v2"
@@ -174,6 +175,10 @@ func addSnippet(item *model.Item, source string) error {
 	item.ExtractedText = string(data)
 	item.MimeType = "text/plain"
 	item.FileSize = int64(len(data))
+
+	if lang := langdetect.Detect(string(data)); lang != "" {
+		item.Metadata = json.RawMessage(fmt.Sprintf(`{"language":%q}`, lang))
+	}
 	return nil
 }
 

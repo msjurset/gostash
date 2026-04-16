@@ -1,10 +1,12 @@
 package extract
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 )
@@ -50,8 +52,12 @@ func (e *EmailExtractor) Extract(r io.Reader, mimeType string) (*Result, error) 
 	text.WriteString("\n")
 	text.WriteString(body)
 
+	// Normalize Windows line endings
+	result := strings.ReplaceAll(strings.TrimSpace(text.String()), "\r\n", "\n")
+	result = strings.ReplaceAll(result, "\r", "\n")
+
 	return &Result{
-		Text:     strings.TrimSpace(text.String()),
+		Text:     result,
 		Title:    subject,
 		MimeType: MIMEEmail,
 		Tags:     []string{"email"},
@@ -66,15 +72,6 @@ func extractEmailBody(msg *mail.Message) (string, error) {
 
 	mediaType, params, err := mime.ParseMediaType(ct)
 	if err != nil {
-		// Fall back to reading body as plain text
-		data, err := io.ReadAll(msg.Body)
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-
-	if strings.HasPrefix(mediaType, "text/plain") {
 		data, err := io.ReadAll(msg.Body)
 		if err != nil {
 			return "", err
@@ -90,12 +87,16 @@ func extractEmailBody(msg *mail.Message) (string, error) {
 		return extractMultipart(msg.Body, boundary)
 	}
 
-	// Single-part HTML or other — read as-is
-	data, err := io.ReadAll(msg.Body)
+	// Single-part message — decode transfer encoding
+	body, err := decodeBody(msg.Body, msg.Header.Get("Content-Transfer-Encoding"))
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+
+	if strings.HasPrefix(mediaType, "text/html") {
+		return htmlToMarkdown(body), nil
+	}
+	return body, nil
 }
 
 func extractMultipart(r io.Reader, boundary string) (string, error) {
@@ -112,18 +113,32 @@ func extractMultipart(r io.Reader, boundary string) (string, error) {
 		}
 
 		ct := part.Header.Get("Content-Type")
-		mediaType, _, _ := mime.ParseMediaType(ct)
+		mediaType, params, _ := mime.ParseMediaType(ct)
+		cte := part.Header.Get("Content-Transfer-Encoding")
 
-		data, err := io.ReadAll(part)
+		// Handle nested multipart (e.g., multipart/alternative inside multipart/mixed)
+		if strings.HasPrefix(mediaType, "multipart/") {
+			if b := params["boundary"]; b != "" {
+				nested, err := extractMultipart(part, b)
+				if err == nil && nested != "" {
+					if plain == "" {
+						plain = nested
+					}
+				}
+				continue
+			}
+		}
+
+		body, err := decodeBody(part, cte)
 		if err != nil {
 			continue
 		}
 
 		switch {
 		case strings.HasPrefix(mediaType, "text/plain"):
-			plain = string(data)
+			plain = body
 		case strings.HasPrefix(mediaType, "text/html") && plain == "":
-			html = string(data)
+			html = htmlToMarkdown(body)
 		}
 	}
 
@@ -131,6 +146,43 @@ func extractMultipart(r io.Reader, boundary string) (string, error) {
 		return plain, nil
 	}
 	return html, nil
+}
+
+// decodeBody reads and decodes a message body according to Content-Transfer-Encoding.
+func decodeBody(r io.Reader, encoding string) (string, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		// MIME base64 has line breaks — strip them before decoding
+		clean := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' || r == ' ' {
+				return -1
+			}
+			return r
+		}, string(raw))
+		decoded, err := base64.StdEncoding.DecodeString(clean)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(clean)
+			if err != nil {
+				return string(raw), nil
+			}
+		}
+		// Normalize Windows line endings
+		s := strings.ReplaceAll(string(decoded), "\r\n", "\n")
+		return strings.ReplaceAll(s, "\r", "\n"), nil
+	case "quoted-printable":
+		data, err := io.ReadAll(quotedprintable.NewReader(strings.NewReader(string(raw))))
+		if err != nil {
+			return string(raw), nil
+		}
+		return string(data), nil
+	default:
+		return string(raw), nil
+	}
 }
 
 func decodeHeader(s string) string {

@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS items (
     id            TEXT PRIMARY KEY,
-    type          TEXT NOT NULL CHECK(type IN ('link', 'snippet', 'file', 'image')),
+    type          TEXT NOT NULL CHECK(type IN ('link', 'snippet', 'file', 'image', 'email')),
     title         TEXT NOT NULL DEFAULT '',
     url           TEXT NOT NULL DEFAULT '',
     notes         TEXT NOT NULL DEFAULT '',

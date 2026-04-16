@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,12 +36,26 @@ Bookmark folders are converted to tags. Duplicate URLs are skipped.`,
 	RunE: runImportBookmarks,
 }
 
+var importPocketCmd = &cobra.Command{
+	Use:   "pocket <file>",
+	Short: "Import bookmarks from Pocket HTML export",
+	Long: `Import bookmarks from a Pocket export file.
+Export from: getpocket.com/export
+
+Tags from Pocket are preserved. The time_added attribute sets the item's creation date.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runImportBookmarks, // Same Netscape HTML format
+}
+
 func init() {
-	importBookmarksCmd.Flags().StringSliceP("tag", "T", nil, "Extra tags to add to all imported bookmarks")
-	importBookmarksCmd.Flags().StringP("collection", "c", "", "Add all imports to this collection")
-	importBookmarksCmd.Flags().Bool("dry-run", false, "Preview what would be imported without saving")
+	for _, cmd := range []*cobra.Command{importBookmarksCmd, importPocketCmd} {
+		cmd.Flags().StringSliceP("tag", "T", nil, "Extra tags to add to all imported items")
+		cmd.Flags().StringP("collection", "c", "", "Add all imports to this collection")
+		cmd.Flags().Bool("dry-run", false, "Preview what would be imported without saving")
+	}
 	importBackfillCmd.Flags().IntP("limit", "l", 50, "Max items to process")
 	importCmd.AddCommand(importBookmarksCmd)
+	importCmd.AddCommand(importPocketCmd)
 	importCmd.AddCommand(importBackfillCmd)
 	rootCmd.AddCommand(importCmd)
 }
@@ -106,9 +121,11 @@ func runImportBackfill(cmd *cobra.Command, args []string) error {
 }
 
 type bookmark struct {
-	url   string
-	title string
-	tags  []string // derived from folder path
+	url       string
+	title     string
+	tags      []string   // derived from folder path + inline tags
+	notes     string
+	createdAt *time.Time // from time_added attribute
 }
 
 func runImportBookmarks(cmd *cobra.Command, args []string) error {
@@ -164,12 +181,18 @@ func runImportBookmarks(cmd *cobra.Command, args []string) error {
 		entropy := ulid.Monotonic(rand.New(rand.NewSource(now.UnixNano())), 0)
 		id := ulid.MustNew(ulid.Timestamp(now), entropy).String()
 
+		created := now
+		if bm.createdAt != nil {
+			created = *bm.createdAt
+		}
+
 		item := &model.Item{
 			ID:        id,
 			Type:      model.TypeURL,
 			Title:     bm.title,
 			URL:       bm.url,
-			CreatedAt: now,
+			Notes:     bm.notes,
+			CreatedAt: created,
 			UpdatedAt: now,
 			Metadata:  json.RawMessage("{}"),
 		}
@@ -245,11 +268,28 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 							tags = append(tags, t)
 						}
 					}
-					bookmarks = append(bookmarks, bookmark{
+					// Inline tags from Pocket exports (comma-separated)
+					if inlineTags := getAttr(n, "tags"); inlineTags != "" {
+						for _, t := range strings.Split(inlineTags, ",") {
+							t = strings.TrimSpace(t)
+							if t != "" {
+								tags = append(tags, normalizeTag(t))
+							}
+						}
+					}
+					bm := bookmark{
 						url:   href,
 						title: title,
 						tags:  tags,
-					})
+					}
+					// time_added from Pocket exports (unix timestamp)
+					if ts := getAttr(n, "time_added"); ts != "" {
+						if sec, err := strconv.ParseInt(ts, 10, 64); err == nil {
+							t := time.Unix(sec, 0).UTC()
+							bm.createdAt = &t
+						}
+					}
+					bookmarks = append(bookmarks, bm)
 				}
 			}
 		}

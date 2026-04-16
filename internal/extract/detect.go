@@ -19,15 +19,25 @@ const (
 
 // DetectMIME determines the MIME type from file content and name.
 func DetectMIME(data []byte, filename string) string {
-	// Try content-based detection first
+	var ct string
 	if len(data) > 0 {
-		ct := http.DetectContentType(data)
-		if ct != "application/octet-stream" {
-			return ct
+		ct = http.DetectContentType(data)
+	}
+
+	// If extension maps to a more specific type than content detection
+	// produced, prefer the extension. This handles formats like .eml
+	// whose content looks like text/plain to http.DetectContentType.
+	ext := filepath.Ext(filename)
+	if extMIME := mimeFromExt(ext); extMIME != "application/octet-stream" {
+		if ct == "" || ct == "application/octet-stream" || strings.HasPrefix(ct, "text/plain") {
+			return extMIME
 		}
 	}
-	// Fall back to extension
-	return mimeFromExt(filepath.Ext(filename))
+
+	if ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
 }
 
 // SuggestTags returns auto-tag suggestions based on MIME type.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -70,6 +71,9 @@ func URL(rawURL string) (*Result, error) {
 	return result, nil
 }
 
+// listHeadingRe matches list markers before markdown headings: "- ## Heading" → "## Heading"
+var listHeadingRe = regexp.MustCompile(`^\s*[-*]\s+(#{1,6}\s)`)
+
 // htmlToMarkdown converts cleaned HTML to Markdown.
 func htmlToMarkdown(html string) string {
 	md, err := htmltomarkdown.ConvertString(html)
@@ -77,18 +81,21 @@ func htmlToMarkdown(html string) string {
 		// Fall back to stripping tags
 		return stripHTMLTags(html)
 	}
-	// Clean up excessive blank lines
+	// Clean up converter artifacts
 	lines := strings.Split(md, "\n")
 	var result []string
 	blankCount := 0
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			blankCount++
 			if blankCount <= 2 {
 				result = append(result, "")
 			}
 		} else {
 			blankCount = 0
+			// Fix headings wrapped in list items: "- ## Heading" → "## Heading"
+			line = listHeadingRe.ReplaceAllString(line, "$1")
 			result = append(result, line)
 		}
 	}

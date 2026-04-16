@@ -64,6 +64,9 @@ func printItem(item *model.Item, storePath ...string) {
 	if item.MimeType != "" {
 		fmt.Printf("MIME:        %s\n", item.MimeType)
 	}
+	if lang := item.Language(); lang != "" {
+		fmt.Printf("Language:    %s\n", lang)
+	}
 	if item.FileSize > 0 {
 		fmt.Printf("Size:        %s\n", humanSize(item.FileSize))
 	}

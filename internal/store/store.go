@@ -17,6 +17,7 @@ type Store interface {
 	DeleteItem(ctx context.Context, id string) error
 
 	ExistsByURL(ctx context.Context, url string) (bool, error)
+	GetItemByURL(ctx context.Context, url string) (*model.Item, error)
 	ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error)
 
 	// Tags
@@ -39,6 +40,20 @@ type Store interface {
 	AddToCollection(ctx context.Context, itemID, collectionName string) error
 	RemoveFromCollection(ctx context.Context, itemID, collectionName string) error
 	ListCollectionItems(ctx context.Context, name string, filter model.ItemFilter) ([]model.Item, error)
+
+	// Duplicate Dismissal
+	DismissDupePair(ctx context.Context, idA, idB string) error
+	IsDupeDismissed(ctx context.Context, idA, idB string) bool
+	ListDismissedPairs(ctx context.Context) ([][2]string, error)
+
+	// Saved Searches
+	SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter) error
+	ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error)
+	GetSavedSearch(ctx context.Context, name string) (*model.SavedSearch, error)
+	DeleteSavedSearch(ctx context.Context, name string) error
+
+	// Stats
+	Stats(ctx context.Context) (*model.StashStats, error)
 
 	Checkpoint() error
 	Close() error

@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open link unlink import backup restore refresh tag collection ui man help"
+    local commands="add search list show edit delete open link unlink import bulk stats check dupes backup restore refresh chrome-host tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -25,7 +25,13 @@ _stash() {
         fi
         ;;
     search)
-        if [[ "$cur" == -* ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "save list run delete" -- "$cur"))
+        elif [[ "${words[2]}" == "save" ]]; then
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
+            fi
+        elif [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
             COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
@@ -60,13 +66,86 @@ _stash() {
         ;;
     import)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=($(compgen -W "bookmarks" -- "$cur"))
-        elif [[ "${words[2]}" == "bookmarks" ]]; then
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--tag -T --collection -c --dry-run --help" -- "$cur"))
-            else
-                COMPREPLY=($(compgen -f -- "$cur"))
-            fi
+            COMPREPLY=($(compgen -W "bookmarks pocket pinboard notion obsidian backfill" -- "$cur"))
+        else
+            local subcmd="${words[2]}"
+            case "$subcmd" in
+            bookmarks|pocket)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--tag -T --collection -c --dry-run --help" -- "$cur"))
+                else
+                    COMPREPLY=($(compgen -f -- "$cur"))
+                fi
+                ;;
+            pinboard)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--tag -T --collection -c --dry-run --help" -- "$cur"))
+                else
+                    COMPREPLY=($(compgen -f -- "$cur"))
+                fi
+                ;;
+            notion|obsidian)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--tag -T --collection -c --dry-run --help" -- "$cur"))
+                else
+                    COMPREPLY=($(compgen -f -- "$cur"))
+                fi
+                ;;
+            backfill)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--limit -l --help" -- "$cur"))
+                fi
+                ;;
+            esac
+        fi
+        ;;
+    bulk)
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "tag delete collect" -- "$cur"))
+        else
+            local subcmd="${words[2]}"
+            case "$subcmd" in
+            tag)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--add-tag --remove-tag --query --type --tag --in-collection --after --before --limit -l --help" -- "$cur"))
+                elif [[ "$prev" == "--type" ]]; then
+                    COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
+                fi
+                ;;
+            delete)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--yes -y --query --type --tag --in-collection --after --before --limit -l --help" -- "$cur"))
+                elif [[ "$prev" == "--type" ]]; then
+                    COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
+                fi
+                ;;
+            collect)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "--collection -c --remove --query --type --tag --in-collection --after --before --limit -l --help" -- "$cur"))
+                elif [[ "$prev" == "--type" ]]; then
+                    COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
+                fi
+                ;;
+            esac
+        fi
+        ;;
+    stats)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--help" -- "$cur"))
+        fi
+        ;;
+    check)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--urls --files --dupes --help" -- "$cur"))
+        fi
+        ;;
+    dupes)
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "dismiss" -- "$cur"))
+        elif [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--type --threshold --include-dismissed --help" -- "$cur"))
+        elif [[ "$prev" == "--type" ]]; then
+            COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
         fi
         ;;
     backup)
@@ -77,6 +156,11 @@ _stash() {
     restore)
         if [[ "$cur" != -* ]]; then
             COMPREPLY=($(compgen -f -- "$cur"))
+        fi
+        ;;
+    chrome-host)
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "install uninstall" -- "$cur"))
         fi
         ;;
     tag)

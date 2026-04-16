@@ -1,0 +1,3 @@
+-- 'email' type support added to 001_initial.up.sql for new databases.
+-- Existing databases must be migrated manually if the CHECK constraint
+-- does not include 'email'. The stash CLI checks and handles this on startup.

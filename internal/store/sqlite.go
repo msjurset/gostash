@@ -62,7 +62,53 @@ func (s *SQLiteStore) migrate() error {
 			return fmt.Errorf("exec migration %s: %w", e.Name(), err)
 		}
 	}
+
+	// Ensure the items CHECK constraint includes 'email' for pre-v0.9 databases.
+	if err := s.migrateEmailType(); err != nil {
+		return fmt.Errorf("migrate email type: %w", err)
+	}
+
 	return nil
+}
+
+// migrateEmailType adds 'email' to the items type CHECK constraint if missing.
+func (s *SQLiteStore) migrateEmailType() error {
+	var schema string
+	err := s.db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").Scan(&schema)
+	if err != nil || strings.Contains(schema, "'email'") {
+		return nil // already includes email or table doesn't exist
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE items_mig (
+			id TEXT PRIMARY KEY, type TEXT NOT NULL CHECK(type IN ('link','snippet','file','image','email')),
+			title TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+			source_path TEXT NOT NULL DEFAULT '', store_path TEXT NOT NULL DEFAULT '',
+			content_hash TEXT NOT NULL DEFAULT '', extracted_text TEXT NOT NULL DEFAULT '',
+			mime_type TEXT NOT NULL DEFAULT '', file_size INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now')))`,
+		`INSERT INTO items_mig SELECT * FROM items`,
+		`DROP TABLE items`,
+		`ALTER TABLE items_mig RENAME TO items`,
+		`CREATE INDEX IF NOT EXISTS idx_items_type ON items(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_items_url ON items(url)`,
+		`CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt[:40], err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Close() error {
@@ -278,6 +324,19 @@ func (s *SQLiteStore) ExistsByURL(ctx context.Context, url string) (bool, error)
 		return false, fmt.Errorf("check url: %w", err)
 	}
 	return count > 0, nil
+}
+
+// GetItemByURL fetches the first item matching the given URL.
+func (s *SQLiteStore) GetItemByURL(ctx context.Context, url string) (*model.Item, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE url = ? LIMIT 1`, url)
+	item, err := s.scanItem(row)
+	if err != nil {
+		return nil, fmt.Errorf("get item by url: %w", err)
+	}
+	if err := s.loadRelations(ctx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 // ListURLsWithoutContent returns URL items that have no extracted text.
@@ -755,6 +814,205 @@ func (s *SQLiteStore) addToCollectionTx(ctx context.Context, tx *sql.Tx, itemID,
 		return fmt.Errorf("add to collection: %w", err)
 	}
 	return nil
+}
+
+// sortPair returns IDs in consistent sorted order for dedup lookups.
+func sortPair(a, b string) (string, string) {
+	if a > b {
+		return b, a
+	}
+	return a, b
+}
+
+// DismissDupePair marks a pair of items as reviewed (not duplicates).
+func (s *SQLiteStore) DismissDupePair(ctx context.Context, idA, idB string) error {
+	a, b := sortPair(idA, idB)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO dismissed_dupes (item_id_a, item_id_b) VALUES (?, ?)`, a, b)
+	if err != nil {
+		return fmt.Errorf("dismiss dupe pair: %w", err)
+	}
+	return nil
+}
+
+// IsDupeDismissed checks if a pair has been dismissed.
+func (s *SQLiteStore) IsDupeDismissed(ctx context.Context, idA, idB string) bool {
+	a, b := sortPair(idA, idB)
+	var count int
+	s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM dismissed_dupes WHERE item_id_a = ? AND item_id_b = ?`, a, b).Scan(&count)
+	return count > 0
+}
+
+// ListDismissedPairs returns all dismissed pairs.
+func (s *SQLiteStore) ListDismissedPairs(ctx context.Context) ([][2]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT item_id_a, item_id_b FROM dismissed_dupes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pairs [][2]string
+	for rows.Next() {
+		var a, b string
+		rows.Scan(&a, &b)
+		pairs = append(pairs, [2]string{a, b})
+	}
+	return pairs, rows.Err()
+}
+
+// SaveSearch persists a named search query and filter.
+func (s *SQLiteStore) SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter) error {
+	filterJSON, err := json.Marshal(filter)
+	if err != nil {
+		return fmt.Errorf("marshal filter: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO saved_searches (name, query, filter_json) VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET query=excluded.query, filter_json=excluded.filter_json`,
+		name, query, string(filterJSON))
+	if err != nil {
+		return fmt.Errorf("save search: %w", err)
+	}
+	return nil
+}
+
+// ListSavedSearches returns all saved searches.
+func (s *SQLiteStore) ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, query, filter_json FROM saved_searches ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list saved searches: %w", err)
+	}
+	defer rows.Close()
+
+	var searches []model.SavedSearch
+	for rows.Next() {
+		var ss model.SavedSearch
+		var filterJSON string
+		if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON); err != nil {
+			return nil, fmt.Errorf("scan saved search: %w", err)
+		}
+		json.Unmarshal([]byte(filterJSON), &ss.Filter)
+		searches = append(searches, ss)
+	}
+	return searches, rows.Err()
+}
+
+// GetSavedSearch retrieves a saved search by name.
+func (s *SQLiteStore) GetSavedSearch(ctx context.Context, name string) (*model.SavedSearch, error) {
+	var ss model.SavedSearch
+	var filterJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, query, filter_json FROM saved_searches WHERE name = ?`, name,
+	).Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON)
+	if err != nil {
+		return nil, fmt.Errorf("saved search not found: %s", name)
+	}
+	json.Unmarshal([]byte(filterJSON), &ss.Filter)
+	return &ss, nil
+}
+
+// DeleteSavedSearch removes a saved search by name.
+func (s *SQLiteStore) DeleteSavedSearch(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM saved_searches WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("delete saved search: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("saved search not found: %s", name)
+	}
+	return nil
+}
+
+// Stats returns aggregate statistics about the stash.
+func (s *SQLiteStore) Stats(ctx context.Context) (*model.StashStats, error) {
+	st := &model.StashStats{
+		TypeCounts: make(map[string]int),
+	}
+
+	// Total items and size
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(file_size),0) FROM items`).Scan(&st.TotalItems, &st.TotalSize)
+
+	// Counts by type
+	rows, err := s.db.QueryContext(ctx, `SELECT type, COUNT(*) FROM items GROUP BY type`)
+	if err != nil {
+		return nil, fmt.Errorf("type counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t string
+		var c int
+		rows.Scan(&t, &c)
+		display := model.ItemType(t).Display()
+		st.TypeCounts[display] = c
+	}
+
+	// Tag count
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tags`).Scan(&st.TagCount)
+
+	// Collection count
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM collections`).Scan(&st.CollCount)
+
+	// Link count
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_links`).Scan(&st.LinkCount)
+
+	// Top tags (by usage)
+	tagRows, err := s.db.QueryContext(ctx, `
+		SELECT t.id, t.name, COUNT(it.item_id) AS count
+		FROM tags t
+		JOIN item_tags it ON it.tag_id = t.id
+		GROUP BY t.id, t.name
+		ORDER BY count DESC
+		LIMIT 10`)
+	if err != nil {
+		return nil, fmt.Errorf("top tags: %w", err)
+	}
+	defer tagRows.Close()
+	for tagRows.Next() {
+		var tag model.Tag
+		tagRows.Scan(&tag.ID, &tag.Name, &tag.Count)
+		st.TopTags = append(st.TopTags, tag)
+	}
+
+	// Oldest and newest
+	var oldestStr, newestStr sql.NullString
+	s.db.QueryRowContext(ctx, `SELECT MIN(created_at) FROM items`).Scan(&oldestStr)
+	s.db.QueryRowContext(ctx, `SELECT MAX(created_at) FROM items`).Scan(&newestStr)
+	for _, pair := range []struct {
+		str  sql.NullString
+		dest **time.Time
+	}{
+		{oldestStr, &st.OldestItem},
+		{newestStr, &st.NewestItem},
+	} {
+		if pair.str.Valid && pair.str.String != "" {
+			for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05Z"} {
+				if t, err := time.Parse(layout, pair.str.String); err == nil {
+					*pair.dest = &t
+					break
+				}
+			}
+		}
+	}
+
+	// Growth by month (last 12 months)
+	monthRows, err := s.db.QueryContext(ctx, `
+		SELECT strftime('%Y-%m', created_at) AS month, COUNT(*)
+		FROM items
+		GROUP BY month
+		ORDER BY month DESC
+		LIMIT 12`)
+	if err != nil {
+		return nil, fmt.Errorf("month counts: %w", err)
+	}
+	defer monthRows.Close()
+	for monthRows.Next() {
+		var mc model.MonthCount
+		monthRows.Scan(&mc.Month, &mc.Count)
+		st.MonthCounts = append(st.MonthCounts, mc)
+	}
+
+	return st, nil
 }
 
 func marshalMeta(data json.RawMessage) (string, error) {

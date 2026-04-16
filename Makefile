@@ -5,7 +5,7 @@ GOFLAGS = -trimpath
 
 PLATFORMS = linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: build test clean release deploy generate install-completion install-manpage
+.PHONY: build test clean release deploy generate install-completion install-manpage install-chrome-host
 
 generate:
 	go generate ./internal/manpage/
@@ -36,12 +36,15 @@ release: clean test
 	done
 	rm dist/stash.1
 
-deploy: build install-manpage install-completion
+deploy: build install-manpage install-completion install-chrome-host
 	cp $(BINARY) ~/.local/bin/
 
 install-manpage:
 	install -d /usr/local/share/man/man1
 	install -m 644 stash.1 /usr/local/share/man/man1/stash.1
+
+install-chrome-host:
+	./$(BINARY) chrome-host install
 
 install-completion:
 	install -d ~/.oh-my-zsh/custom/completions

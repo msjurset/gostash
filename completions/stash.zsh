@@ -283,7 +283,8 @@ _stash() {
                 '(- *)--help[Show help]' \
                 '--urls[Check for broken URLs]' \
                 '--files[Check for orphaned/missing files]' \
-                '--dupes[Check for duplicate content]'
+                '--dupes[Check for duplicate content]' \
+                '--stream[Emit newline-delimited JSON events as findings arrive]'
             ;;
         dupes)
             local -a dupes_commands

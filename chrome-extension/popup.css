@@ -29,33 +29,38 @@ body {
   color: #fff;
 }
 
-#tabs {
-  display: flex;
-  gap: 2px;
-  background: #2a2a2a;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.tab {
+.mode-btn {
   background: transparent;
   border: none;
-  color: #888;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 4px;
+  padding: 0;
   cursor: pointer;
-  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  transition: background 0.12s, transform 0.08s;
 }
 
-.tab.active {
-  background: #4a9eff;
-  color: #fff;
+.mode-btn:hover {
+  background: #2a2a2a;
 }
 
-.tab:hover:not(.active) {
-  color: #e0e0e0;
+.mode-btn:active {
+  transform: scale(0.94);
+}
+
+.mode-btn .icon-back {
+  display: none;
+}
+
+.mode-btn.back .icon-add {
+  display: none;
+}
+
+.mode-btn.back .icon-back {
+  display: inline-block;
 }
 
 #status {

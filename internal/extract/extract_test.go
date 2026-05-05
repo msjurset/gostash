@@ -67,6 +67,44 @@ func TestHTMLExtractorSupports(t *testing.T) {
 	}
 }
 
+func TestCoalesceOrphanBullets(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "orphan asterisk with following content",
+			in:   "  *\n\nAlex will lead the team.\n\n  *\n\nMario takes Portugal.",
+			want: "  * Alex will lead the team.\n\n  * Mario takes Portugal.",
+		},
+		{
+			name: "single-line bullets pass through",
+			in:   "* one\n* two",
+			want: "* one\n* two",
+		},
+		{
+			name: "asterisk inside text preserved",
+			in:   "see the * at the end",
+			want: "see the * at the end",
+		},
+		{
+			name: "trailing orphan bullet with no follower preserved",
+			in:   "tail content\n\n*",
+			want: "tail content\n\n*",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := coalesceOrphanBullets(tc.in)
+			if got != tc.want {
+				t.Errorf("\nin:   %q\ngot:  %q\nwant: %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDetectMIME(t *testing.T) {
 	tests := []struct {
 		name     string

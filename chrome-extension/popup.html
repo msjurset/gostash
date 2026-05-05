@@ -8,14 +8,20 @@
   <div id="app">
     <div id="header">
       <h1>Stash</h1>
-      <div id="tabs">
-        <button class="tab active" data-tab="stash">Save</button>
-        <button class="tab" data-tab="search">Search</button>
-      </div>
+      <button id="mode-btn" class="mode-btn" type="button" title="Add to your Stash" aria-label="Add to your Stash">
+        <svg class="icon-add" width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="11" cy="11" r="10" fill="#4CAF50"/>
+          <path d="M11 6 V16 M6 11 H16" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <svg class="icon-back" width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="9" cy="9" r="5.5" stroke="#e0e0e0" stroke-width="1.8" fill="none"/>
+          <path d="M13.2 13.2 L17.5 17.5" stroke="#e0e0e0" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Stash View -->
-    <div id="stash-view">
+    <div id="stash-view" class="hidden">
       <div id="status"></div>
 
       <div id="url-preview">
@@ -54,7 +60,7 @@
     </div>
 
     <!-- Search View -->
-    <div id="search-view" class="hidden">
+    <div id="search-view">
       <div class="field search-field">
         <input type="text" id="search-input" placeholder="Search your stash... (tag:name to filter)" autocomplete="off">
         <span id="search-clear" class="search-clear hidden">&times;</span>

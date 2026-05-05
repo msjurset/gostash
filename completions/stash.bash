@@ -136,7 +136,7 @@ _stash() {
         ;;
     check)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--urls --files --dupes --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--urls --files --dupes --stream --help" -- "$cur"))
         fi
         ;;
     dupes)

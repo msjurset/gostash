@@ -17,6 +17,7 @@ const snippetPreview = document.getElementById("snippet-preview");
 const snippetText = document.getElementById("snippet-text");
 
 const searchTagDropdown = document.getElementById("search-tag-dropdown");
+const modeBtn = document.getElementById("mode-btn");
 
 let currentTab = null;
 let allTags = [];
@@ -28,28 +29,31 @@ let selectedText = "";
 let tagJustAccepted = false;
 let searchTagJustAccepted = false;
 
-// --- Tabs ---
-
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    switchTab(tab.dataset.tab);
-  });
-});
+// --- View toggle ---
 
 function switchTab(target) {
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-  document.querySelector(`.tab[data-tab="${target}"]`).classList.add("active");
-
   stashView.classList.toggle("hidden", target !== "stash");
   searchView.classList.toggle("hidden", target !== "search");
 
   if (target === "search") {
+    modeBtn.classList.remove("back");
+    modeBtn.title = "Add to your Stash";
+    modeBtn.setAttribute("aria-label", "Add to your Stash");
     searchInput.focus();
     if (searchInput.value.trim().length === 0) {
       showTagCloud();
     }
+  } else {
+    modeBtn.classList.add("back");
+    modeBtn.title = "Search your Stash";
+    modeBtn.setAttribute("aria-label", "Search your Stash");
   }
 }
+
+modeBtn.addEventListener("click", () => {
+  const inSearch = !searchView.classList.contains("hidden");
+  switchTab(inSearch ? "stash" : "search");
+});
 
 // --- Init ---
 
@@ -128,6 +132,8 @@ async function init() {
       });
     }
   } catch {}
+
+  switchTab("search");
 }
 
 // --- Tag Autocomplete ---
@@ -246,8 +252,18 @@ tagsInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      const idx = activeIndex >= 0 ? activeIndex : 0;
-      selectTag(options[idx].querySelector(".tag-name").textContent);
+      if (activeIndex >= 0) {
+        // User explicitly picked a suggestion via Tab / Arrow / Ctrl-J/K.
+        selectTag(options[activeIndex].querySelector(".tag-name").textContent);
+      } else {
+        // No active navigation — the user typed text that happens to match
+        // a suggestion as a substring (e.g. "ra" substringing "programming").
+        // Commit what they typed verbatim as a new tag, preserving the
+        // comma-separated pattern for adding more.
+        const typed = getCurrentTag();
+        if (typed.length === 0) return;
+        selectTag(typed);
+      }
       tagJustAccepted = true;
       return;
     }
@@ -512,13 +528,20 @@ searchInput.addEventListener("keydown", (e) => {
       return;
     }
     if (e.key === "Enter") {
-      e.preventDefault();
-      const idx = searchTagActiveIndex >= 0 ? searchTagActiveIndex : 0;
-      selectSearchTag(
-        options[idx].querySelector(".tag-name").textContent
-      );
-      searchTagJustAccepted = true;
-      return;
+      if (searchTagActiveIndex >= 0) {
+        // User explicitly picked a suggestion via Tab / Arrow / Ctrl-J/K.
+        e.preventDefault();
+        selectSearchTag(
+          options[searchTagActiveIndex].querySelector(".tag-name").textContent
+        );
+        searchTagJustAccepted = true;
+        return;
+      }
+      // No active navigation — let the typed query stand and fall through
+      // to whatever runs the search. Don't rewrite the user's text to a
+      // substring-match they never asked for.
+      hideSearchTagDropdown();
+      // fallthrough to default Enter behavior
     }
     if (e.key === "Escape") {
       hideSearchTagDropdown();

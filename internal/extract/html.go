@@ -36,6 +36,7 @@ func htmlToMarkdown(html string) string {
 	if err != nil {
 		return html
 	}
+	md = coalesceOrphanBullets(md)
 	// Clean up excessive blank lines
 	lines := strings.Split(md, "\n")
 	var result []string
@@ -52,4 +53,44 @@ func htmlToMarkdown(html string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
+// coalesceOrphanBullets fixes a malformed-list pattern that some HTML→MD
+// converters emit when list items contain block-level children
+// (`<li><div>…</div></li>`): the bullet marker lands on its own line and the
+// content falls onto the next line, with one or more blank lines between
+// them. SwiftUI's Markdown renderer then sees a bare "*" and a separate
+// paragraph instead of a list item. Rejoin them onto a single line so the
+// renderer treats the construct as a real bullet.
+func coalesceOrphanBullets(md string) string {
+	lines := strings.Split(md, "\n")
+	out := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if isOrphanBullet(trimmed) {
+			j := i + 1
+			for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+				j++
+			}
+			if j < len(lines) {
+				indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+				out = append(out, indent+trimmed+" "+strings.TrimSpace(lines[j]))
+				i = j + 1
+				continue
+			}
+		}
+		out = append(out, line)
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+func isOrphanBullet(s string) bool {
+	switch s {
+	case "*", "-", "+":
+		return true
+	}
+	return false
 }

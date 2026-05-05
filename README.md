@@ -8,7 +8,8 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 - **Full-text search** — SQLite FTS5-powered search with partial word matching
 - **Tags & collections** — Organize items with tags and named collections
 - **Item linking** — Create labeled relationships between items
-- **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages
+- **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages. Email bodies are charset-aware (Windows-1252, ISO-8859-1, etc. transcoded to UTF-8) and HTML / plain-text bullet lists are normalized to standard Markdown
+- **Streaming health check** — `stash check --stream` emits newline-delimited JSON events as broken-URL / missing-file / duplicate findings arrive, for progressive UI rendering
 - **Interactive TUI** — Browse, search, link, and delete with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea), with ASCII art image preview and built-in file browser for batch stashing
 - **Configurable** — TOML config file at `~/.config/stash/config.toml`
 - **JSON output** — Script-friendly `--json` flag on all commands
@@ -95,6 +96,10 @@ stash ui
 | `collection create <name>` | Create a collection |
 | `collection show <name>` | Show items in a collection |
 | `collection delete <name>` | Delete a collection |
+| `check` | Scan for broken URLs, missing files, orphaned files, and duplicates |
+| `stats` | Show counts, top tags, monthly growth, and storage usage |
+| `refresh <id>` | Re-fetch URL content for an existing item |
+| `backup` / `restore <path>` | Snapshot or restore the stash database and content |
 | `ui` | Launch interactive TUI |
 
 ### Flags

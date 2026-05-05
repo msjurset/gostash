@@ -1,4 +1,4 @@
-.TH STASH 1 "2026-03-19" "stash v0.6.0" "User Commands"
+.TH STASH 1 "2026-05-05" "stash v1.2.0" "User Commands"
 .SH NAME
 stash \- personal knowledge vault
 .SH SYNOPSIS
@@ -74,6 +74,26 @@ Show items in a collection.
 .TP
 .B collection delete \fI<name>\fR
 Delete a collection (items are retained).
+.TP
+.B check
+Check stash for data hygiene issues. Reports broken URLs, missing files,
+orphaned files, and duplicate content. Use \fB--urls\fR, \fB--files\fR, or
+\fB--dupes\fR to limit the scan. Use \fB--stream\fR to emit newline-delimited
+JSON events as findings arrive (instead of a single summary at the end);
+useful for progressive UI rendering.
+.TP
+.B stats
+Show stash statistics: counts by type, top tags, monthly growth, storage usage.
+.TP
+.B refresh \fI<id>\fR
+Re-fetch URL content for the given item, updating its title, extracted text,
+and last-fetched timestamp.
+.TP
+.B backup
+Create a backup of the stash database and content files.
+.TP
+.B restore \fI<path>\fR
+Restore the stash from a previously created backup.
 .TP
 .B ui\fR, \fBtui
 Launch the interactive terminal UI.

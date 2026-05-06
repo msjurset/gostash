@@ -164,9 +164,29 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 		item.Collections = append(item.Collections, model.Collection{Name: req.Collection})
 	}
 
+	// Apply user-defined rules. Same helper as the CLI add path so Chrome
+	// captures get the same tags, retitles, notes, notifications, links,
+	// and skip behavior as `stash add`.
+	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+		UserTitle:      req.Title,
+		UserNote:       req.Notes,
+		UserCollection: req.Collection,
+	})
+	if ruleResult.Skipped {
+		logSkipped(item, ruleResult)
+		for _, msg := range ruleResult.Notifies {
+			fireNotification(item, msg)
+		}
+		return &nativeResponse{Error: fmt.Sprintf("skipped by rule %q", ruleResult.SkippedBy)}
+	}
+	EnsureRuleCollections(ctx, s, ruleResult)
+
 	if err := s.CreateItem(ctx, item); err != nil {
 		return &nativeResponse{Error: fmt.Sprintf("save: %v", err)}
 	}
+
+	logRuleFire(item, ruleResult)
+	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	return &nativeResponse{OK: true, Item: item}
 }
@@ -204,9 +224,28 @@ func handleStashText(ctx context.Context, s store.Store, req *nativeRequest) *na
 		item.Collections = append(item.Collections, model.Collection{Name: req.Collection})
 	}
 
+	// Same rules application as the URL path — text snippets captured via
+	// the Chrome extension get the same tag/note/skip treatment as `stash add -`.
+	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+		UserTitle:      req.Title,
+		UserNote:       req.Notes,
+		UserCollection: req.Collection,
+	})
+	if ruleResult.Skipped {
+		logSkipped(item, ruleResult)
+		for _, msg := range ruleResult.Notifies {
+			fireNotification(item, msg)
+		}
+		return &nativeResponse{Error: fmt.Sprintf("skipped by rule %q", ruleResult.SkippedBy)}
+	}
+	EnsureRuleCollections(ctx, s, ruleResult)
+
 	if err := s.CreateItem(ctx, item); err != nil {
 		return &nativeResponse{Error: fmt.Sprintf("save: %v", err)}
 	}
+
+	logRuleFire(item, ruleResult)
+	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	return &nativeResponse{OK: true, Item: item}
 }

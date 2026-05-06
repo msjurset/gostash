@@ -17,6 +17,7 @@ _stash() {
         'import:Import items from external sources'
         'bulk:Bulk operations on multiple items'
         'stats:Show stash statistics'
+        'rules:Inspect and apply capture rules'
         'check:Check stash for data hygiene issues'
         'dupes:Find duplicate items'
         'backup:Create a backup of database and files'
@@ -285,6 +286,44 @@ _stash() {
                 '--files[Check for orphaned/missing files]' \
                 '--dupes[Check for duplicate content]' \
                 '--stream[Emit newline-delimited JSON events as findings arrive]'
+            ;;
+        rules)
+            local -a rules_commands
+            rules_commands=(
+                'list:List configured rules'
+                'test:Show which rules would apply to an item'
+                'apply:Retroactively apply rules to existing items'
+                'enable:Enable a rule by name'
+                'disable:Disable a rule by name'
+                'save:Upsert a rule from JSON on stdin'
+                'remove:Delete a rule by name'
+                'log:Show recent rule activity'
+            )
+            _arguments -C '1: :->cmd' '*:: :->args'
+            case $state in
+                cmd) _describe 'rules command' rules_commands ;;
+                args)
+                    case $words[1] in
+                        apply)
+                            _arguments \
+                                '--dry-run[Preview changes without writing]' \
+                                '--type[Limit to one item type]:type:(url snippet file image email)' \
+                                '*--tag[Limit to items with these tags]:tag:' \
+                                '--rule[Apply only the named rule]:name:'
+                            ;;
+                        log)
+                            _arguments \
+                                '--type[Filter by event type]:type:(fire skip retro)' \
+                                '--rule[Filter to events involving the named rule]:name:' \
+                                '--limit[Maximum events to show]:N:' \
+                                '-l[Maximum events to show]:N:' \
+                                '--since[Only events newer than DURATION]:duration:' \
+                                '--tail[Stream new events as they arrive]' \
+                                '-f[Stream new events as they arrive]'
+                            ;;
+                    esac
+                    ;;
+            esac
             ;;
         dupes)
             local -a dupes_commands

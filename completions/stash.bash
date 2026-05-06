@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open link unlink import bulk stats check dupes backup restore refresh chrome-host tag collection ui man help"
+    local commands="add search list show edit delete open link unlink import bulk stats check dupes backup restore refresh chrome-host rules tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -137,6 +137,15 @@ _stash() {
     check)
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--urls --files --dupes --stream --help" -- "$cur"))
+        fi
+        ;;
+    rules)
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "list test apply enable disable save remove log" -- "$cur"))
+        elif [[ "${COMP_WORDS[2]}" == "apply" && "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--dry-run --type --tag --rule --help" -- "$cur"))
+        elif [[ "${COMP_WORDS[2]}" == "log" && "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--type --rule --limit --since --tail -f -l --help" -- "$cur"))
         fi
         ;;
     dupes)

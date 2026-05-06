@@ -133,9 +133,39 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		item.Collections = append(item.Collections, model.Collection{Name: collection})
 	}
 
+	// Apply user-defined capture rules. Pre-save effects (tags, collection,
+	// title, note) fold into `item`; skip aborts the add; post-save effects
+	// (link_to, notify) run after CreateItem succeeds. Same helper is used
+	// by the chrome-host capture path so all sources behave identically.
+	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+		UserTitle:      title,
+		UserNote:       note,
+		UserCollection: collection,
+	})
+	if ruleResult.Skipped {
+		logSkipped(item, ruleResult)
+		for _, msg := range ruleResult.Notifies {
+			fireNotification(item, msg)
+		}
+		if flagJSON {
+			printJSON(map[string]any{
+				"skipped":    true,
+				"rule":       ruleResult.SkippedBy,
+				"item_title": item.Title,
+			})
+		} else {
+			fmt.Printf("Skipped by rule %q: %s\n", ruleResult.SkippedBy, item.Title)
+		}
+		return nil
+	}
+	EnsureRuleCollections(ctx, s, ruleResult)
+
 	if err := s.CreateItem(ctx, item); err != nil {
 		return fmt.Errorf("save item: %w", err)
 	}
+
+	logRuleFire(item, ruleResult)
+	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	if flagJSON {
 		printJSON(item)

@@ -1,4 +1,4 @@
-.TH STASH 1 "2026-03-19" "stash v0.6.0" "User Commands"
+.TH STASH 1 "2026-05-06" "stash v1.3.0" "User Commands"
 .SH NAME
 stash \- personal knowledge vault
 .SH SYNOPSIS
@@ -74,6 +74,115 @@ Show items in a collection.
 .TP
 .B collection delete \fI<name>\fR
 Delete a collection (items are retained).
+.TP
+.B rules list
+List configured capture rules from \fI$STASH_DIR/rules.yaml\fR.
+.TP
+.B rules test \fI<id>\fR
+Show which rules would apply to an existing item — matched rules, tags
+that would be added, collection assignment, title overrides, note
+updates, link targets, notify messages, and whether the item would be
+skipped. No writes.
+.TP
+.B rules apply \fR[\fB--dry-run\fR] [\fB--type \fItype\fR] [\fB--tag \fItag\fR] [\fB--rule \fIname\fR]
+Retroactively run rules over existing items. Tags, collection, title, and
+note actions apply; \fIskip\fR and \fInotify\fR are capture-time only and
+do nothing on retroactive runs. Use \fB--dry-run\fR to preview changes,
+\fB--type\fR/\fB--tag\fR to filter the candidate set, or \fB--rule\fR to
+apply a single named rule. Items that already have any collection are
+not reassigned, mirroring the precedence rule used by \fBstash add\fR.
+.TP
+.B rules enable \fI<name>\fR / rules disable \fI<name>\fR
+Toggle a rule's \fIenabled\fR flag. The rule remains in the file when
+disabled but does not fire. Comments at the top of the file are preserved
+across toggles; YAML indentation may reflow.
+.TP
+.B rules save
+Read a single rule as JSON from stdin and upsert it into the rules file
+(replace if the name exists, append otherwise). Used by the Mac app's
+rule editor. Comments and other rules are preserved.
+.TP
+.B rules remove \fI<name>\fR
+Delete a rule by name from the rules file.
+.TP
+.B rules log \fR[\fB--type \fItype\fR] [\fB--rule \fIname\fR] [\fB--limit \fIN\fR] [\fB--since \fIduration\fR] [\fB--tail\fR]
+Show recent rule activity from \fI$STASH_DIR/rules.log\fR. Three event
+types: \fBfire\fR (capture matched ≥1 rule and was saved), \fBskip\fR
+(rule with skip:true matched and dropped the capture), and \fBretro\fR
+(\fBrules apply\fR changed an existing item). Newest first.
+\fB--type\fR / \fB--rule\fR filter the result; \fB--limit\fR caps the
+count (default 50, 0 for all); \fB--since\fR accepts \fB30m\fR /
+\fB1h\fR / \fB7d\fR / \fB1w\fR style values; \fB--tail\fR (\fB-f\fR)
+follows the log live, streaming new events as they arrive (Ctrl-C to
+stop). \fB--json\fR emits one Event per line in the on-disk JSONL shape
+for piping through \fBjq\fR.
+.SS Rule actions
+Each rule has match conditions plus a list of actions. Action types:
+.B add_tags
+(additive across rules),
+.B add_collection
+(first-match-wins, auto-creates if missing),
+.B set_title
+(template; first-match-wins; overrides extracted title unless \fB-t\fR flag was passed),
+.B set_note
+(template; first-match-wins),
+.B append_note
+(template; stacks across rules; newline-separated),
+.B skip
+(boolean; if any matched rule sets it, the item is logged to
+\fI$STASH_DIR/skip.log\fR and not saved),
+.B notify
+(template; fires a macOS desktop notification via osascript),
+.B link_to
+(\fItag\fR or \fIid\fR; auto-links the new item to the matched targets,
+capped at 50 to prevent runaway fanout).
+.PP
+Templates support these variables:
+\fB{{.Title}}\fR, \fB{{.URL}}\fR, \fB{{.Domain}}\fR, \fB{{.Type}}\fR,
+\fB{{.MimeType}}\fR, \fB{{.Sender}}\fR, \fB{{.SenderName}}\fR,
+\fB{{.SenderEmail}}\fR, \fB{{.SenderDomain}}\fR, \fB{{.Subject}}\fR,
+\fB{{.Filename}}\fR, \fB{{.Date}}\fR, \fB{{.Rule.Name}}\fR.
+.PP
+Named regex capture groups in \fIurl_regex\fR / \fIcontent_regex\fR are
+exposed as \fB{{.Captures.\fIname\fR}}\fR. For example,
+\fIcontent_regex: "Total:\\s*(?P<amount>\\$[0-9.]+)"\fR + \fIset_title:
+"Invoice {{.Captures.amount}}"\fR. Missing names render as empty strings.
+.SS Notifications
+The \fInotify\fR action fires a desktop notification using a
+platform-appropriate backend.
+.PP
+On macOS, if \fBterminal-notifier\fR is installed (\fIbrew install
+terminal-notifier\fR), notifications are clickable — clicking the banner
+opens the item's URL (link items) or source file (file items) in its
+default app. Without \fBterminal-notifier\fR, notifications fall back to
+\fIosascript\fR's \fBdisplay notification\fR, which is non-clickable.
+.PP
+On Linux, the action uses \fBnotify-send\fR (libnotify). On other
+platforms it logs to stderr.
+.SS Migration
+On first read, if \fI$STASH_DIR/rules.yaml\fR does not exist but
+\fI$STASH_DIR/autotag.yaml\fR does, the legacy file is silently migrated
+to the new \fIactions:\fR list shape and renamed.
+.TP
+.B check
+Check stash for data hygiene issues. Reports broken URLs, missing files,
+orphaned files, and duplicate content. Use \fB--urls\fR, \fB--files\fR, or
+\fB--dupes\fR to limit the scan. Use \fB--stream\fR to emit newline-delimited
+JSON events as findings arrive (instead of a single summary at the end);
+useful for progressive UI rendering.
+.TP
+.B stats
+Show stash statistics: counts by type, top tags, monthly growth, storage usage.
+.TP
+.B refresh \fI<id>\fR
+Re-fetch URL content for the given item, updating its title, extracted text,
+and last-fetched timestamp.
+.TP
+.B backup
+Create a backup of the stash database and content files.
+.TP
+.B restore \fI<path>\fR
+Restore the stash from a previously created backup.
 .TP
 .B ui\fR, \fBtui
 Launch the interactive terminal UI.

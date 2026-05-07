@@ -5,11 +5,17 @@ _stash() {
     commands=(
         'add:Stash a URL, file, or stdin snippet'
         'search:Full-text search across all stashed items'
+        'find:Interactive fuzzy finder (requires fzf)'
         'list:List stashed items'
         'show:Show details of a stashed item'
         'edit:Edit a stashed item'
         'delete:Delete a stashed item'
+        'archive:Soft-delete an item (hide from default list)'
+        'unarchive:Restore an archived item'
         'open:Open a stashed item in its default application'
+        'copy:Copy a field of a stashed item to the clipboard'
+        'log:Show recent capture activity (rules, captures, errors)'
+        'shell-init:Print shell function + keybind for stash find integration'
         'tag:Manage tags'
         'collection:Manage collections'
         'link:Create a link between two items'
@@ -64,15 +70,22 @@ _stash() {
                 'save:Save a search for later'
                 'list:List saved searches'
                 'run:Run a saved search'
+                'rename:Rename a saved search'
                 'delete:Delete a saved search'
             )
             _arguments -C \
                 '(- *)--help[Show help]' \
                 '--type=[Filter by type]:type:(url snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
+                '*--exclude-tag=[Exclude tag]:tag:' \
+                '--untagged[Only items with no tags]' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \
                 '--before=[Created before]:date:' \
+                '--recent=[Within duration]:duration (e.g. 7d, 2w, 6h):' \
+                '--regex=[RE2 pattern]:pattern:' \
+                '--include-archived[Also show archived items]' \
+                '--archived[Only archived items]' \
                 '-l+[Max results]:limit:' \
                 '--limit=[Max results]:limit:' \
                 '1: :->subcmd' \
@@ -87,13 +100,21 @@ _stash() {
                     _arguments \
                         '--type=[Filter by type]:type:(url snippet file image email)' \
                         '*--tag=[Filter by tag]:tag:' \
+                        '*--exclude-tag=[Exclude tag]:tag:' \
+                        '--untagged[Only items with no tags]' \
                         '--collection=[Filter by collection]:collection:' \
                         '--after=[Created after]:date:' \
                         '--before=[Created before]:date:' \
+                        '--recent=[Within duration]:duration:' \
+                        '--regex=[RE2 pattern]:pattern:' \
+                        '--live[Save as a Smart Collection (auto-refreshes in stash-mac)]' \
                         '-l+[Max results]:limit:' \
                         '--limit=[Max results]:limit:' \
                         '1:name:' \
                         '2:query:'
+                    ;;
+                rename)
+                    _arguments '1:old name:' '2:new name:'
                     ;;
                 run|delete)
                     _arguments '1:name:'
@@ -102,16 +123,67 @@ _stash() {
                 ;;
             esac
             ;;
+        find)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--type=[Filter by type]:type:(url snippet file image email)' \
+                '*--tag=[Filter by tag]:tag:' \
+                '*--exclude-tag=[Exclude tag]:tag:' \
+                '--untagged[Only items with no tags]' \
+                '--collection=[Filter by collection]:collection:' \
+                '--after=[Created after]:date:' \
+                '--before=[Created before]:date:' \
+                '--recent=[Within duration]:duration (e.g. 7d, 2w, 6h):' \
+                '--regex=[RE2 pattern]:pattern:' \
+                '--include-archived[Also show archived items]' \
+                '--archived[Only archived items]' \
+                '-l+[Max results]:limit:' \
+                '--limit=[Max results]:limit:' \
+                '--action=[Action on Enter]:action:(open copy-url copy-id edit delete print-id print-json)'
+            ;;
         list)
             _arguments \
                 '(- *)--help[Show help]' \
                 '--type=[Filter by type]:type:(url snippet file image email)' \
                 '*--tag=[Filter by tag]:tag:' \
+                '*--exclude-tag=[Exclude tag]:tag:' \
+                '--untagged[Only items with no tags]' \
                 '--collection=[Filter by collection]:collection:' \
                 '--after=[Created after]:date:' \
                 '--before=[Created before]:date:' \
+                '--recent=[Within duration]:duration:' \
+                '--regex=[RE2 pattern]:pattern:' \
+                '--include-archived[Also show archived items]' \
+                '--archived[Only archived items]' \
                 '-l+[Max results]:limit:' \
                 '--limit=[Max results]:limit:'
+            ;;
+        archive|unarchive)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--dry-run[Print what would be (un)archived without writing]' \
+                '*:item id:'
+            ;;
+        copy)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--field=[Field to copy]:field:(url id title content notes)' \
+                '1:item id:'
+            ;;
+        log)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--type=[Filter by event type]:type:(fire skip retro capture error)' \
+                '--rule=[Filter to events involving the named rule]:name:' \
+                '--since=[Only events newer than DURATION]:duration (e.g. 30m, 1h, 7d, 1w):' \
+                '--limit=[Maximum events to show]:N:' \
+                '-l+[Maximum events to show]:N:' \
+                '(--tail -f)'{--tail,-f}'[Follow the log live]'
+            ;;
+        shell-init)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--shell=[Target shell]:shell:(zsh bash)'
             ;;
         show|delete|open|refresh)
             _arguments \
@@ -296,6 +368,7 @@ _stash() {
                 'enable:Enable a rule by name'
                 'disable:Disable a rule by name'
                 'save:Upsert a rule from JSON on stdin'
+                'rename:Rename a rule (updates rules.yaml and rewrites rules.log)'
                 'remove:Delete a rule by name'
                 'log:Show recent rule activity'
             )
@@ -313,13 +386,19 @@ _stash() {
                             ;;
                         log)
                             _arguments \
-                                '--type[Filter by event type]:type:(fire skip retro)' \
+                                '--type[Filter by event type]:type:(fire skip retro capture error)' \
                                 '--rule[Filter to events involving the named rule]:name:' \
                                 '--limit[Maximum events to show]:N:' \
                                 '-l[Maximum events to show]:N:' \
                                 '--since[Only events newer than DURATION]:duration:' \
                                 '--tail[Stream new events as they arrive]' \
                                 '-f[Stream new events as they arrive]'
+                            ;;
+                        rename)
+                            _arguments '1:old name:' '2:new name:'
+                            ;;
+                        enable|disable|remove)
+                            _arguments '1:rule name:'
                             ;;
                     esac
                     ;;

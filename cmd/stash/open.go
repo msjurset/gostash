@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/model"
@@ -38,6 +39,15 @@ func runOpen(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Snippets are terminal-native: print the body to stdout (or
+	// route through $PAGER for long ones) instead of writing a temp
+	// .txt and shelling out to a GUI editor. Keeps the user in the
+	// terminal where they launched `sf` / `stash open`, and gives
+	// immediate visible feedback.
+	if item.Type == model.TypeSnippet {
+		return openSnippet(item)
+	}
+
 	target := openTarget(item)
 	if target == "" {
 		return fmt.Errorf("nothing to open for this item")
@@ -51,6 +61,33 @@ func runOpen(cmd *cobra.Command, args []string) error {
 	}
 
 	return openExternal(target)
+}
+
+// openSnippet prints the snippet body. Pages through $PAGER (or
+// `less -FRX` as a sensible default) when the body is long enough
+// that dumping it would flood the scrollback. The `-F` flag exits
+// less if the content fits on one screen so short snippets don't
+// require a keystroke to dismiss.
+func openSnippet(item *model.Item) error {
+	body := item.ExtractedText
+	if body == "" {
+		return fmt.Errorf("snippet has no extracted text")
+	}
+	const inlineThreshold = 4096
+	if len(body) <= inlineThreshold {
+		fmt.Println(body)
+		return nil
+	}
+	pager := os.Getenv("PAGER")
+	if pager == "" {
+		pager = "less -FRX"
+	}
+	parts := strings.Fields(pager)
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Stdin = strings.NewReader(body)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func openTarget(item *model.Item) string {
@@ -75,6 +112,9 @@ func openTarget(item *model.Item) string {
 		if item.SourcePath != "" {
 			return item.SourcePath
 		}
+		// Snippet handling lives in runOpen rather than openTarget —
+		// snippets print to stdout / pager rather than being routed
+		// through `open`, since they're terminal-native content.
 	}
 	return ""
 }

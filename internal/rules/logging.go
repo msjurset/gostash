@@ -27,6 +27,17 @@ const (
 	// item. Same shape as EventFire but represents a retroactive run
 	// rather than a capture.
 	EventRetro EventType = "retro"
+
+	// EventCapture — capture-time: the item was saved but no rule
+	// matched. The unified-log answer to "what got stashed today
+	// that fell through every rule?". `Rules` is empty.
+	EventCapture EventType = "capture"
+
+	// EventError — capture failed before the item could be saved
+	// (fetch error, parse error, file I/O, etc.). No ItemID; the
+	// `Error` field carries the message and `Source` carries
+	// whatever identifying string the call site had.
+	EventError EventType = "error"
 )
 
 // Event is one entry in $STASH_DIR/rules.log. JSON-encoded; one line per
@@ -40,15 +51,31 @@ type Event struct {
 	Title     string    `json:"title"`
 	Source    string    `json:"source"`
 	Effects   []string  `json:"effects,omitempty"`
+	// Error is populated only on EventError entries — the original
+	// error message that caused the capture to fail. `omitempty` so
+	// the existing event types stay byte-for-byte identical on disk.
+	Error string `json:"error,omitempty"`
 }
 
-// DefaultLogPath returns the canonical rules.log path: $STASH_DIR/rules.log.
+// DefaultLogPath returns the canonical capture.log path:
+// $STASH_DIR/capture.log. The file records every successful capture
+// (with or without rule matches), every skip, every retroactive rule
+// fire, and every ingest error — a unified audit trail across all
+// ingest surfaces.
 func DefaultLogPath(stashDir string) string {
+	return filepath.Join(stashDir, "capture.log")
+}
+
+// LegacyRulesLogPath returns the previous "rules-only" log location.
+// Folded into the unified capture.log on first append; see
+// migrate_capture_log.go.
+func LegacyRulesLogPath(stashDir string) string {
 	return filepath.Join(stashDir, "rules.log")
 }
 
-// LegacySkipLogPath returns the previous skip-only log location. Folded
-// into the unified rules.log on first append; see migrate_skip_log.go.
+// LegacySkipLogPath returns the original skip-only log location.
+// Predates rules.log; folded into rules.log first, then migrated
+// onward to capture.log.
 func LegacySkipLogPath(stashDir string) string {
 	return filepath.Join(stashDir, "skip.log")
 }
@@ -68,11 +95,20 @@ func AppendEvent(path string, ev Event) error {
 		ev.Timestamp = time.Now().UTC()
 	}
 
-	// Best-effort migration. Non-fatal on failure.
-	legacy := LegacySkipLogPath(filepath.Dir(path))
-	if _, err := os.Stat(legacy); err == nil {
+	// Best-effort migrations from the two prior log files. Each
+	// runs only if the legacy file is still present; both remove
+	// the legacy file on success so subsequent appends skip the
+	// check entirely. Failures log to stderr but never escalate —
+	// rule events should never be blocked by a flaky log writer.
+	dir := filepath.Dir(path)
+	if legacy := LegacySkipLogPath(dir); fileExists(legacy) {
 		if err := migrateLegacySkipLog(legacy, path); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: migrate skip.log: %v\n", err)
+		}
+	}
+	if legacy := LegacyRulesLogPath(dir); fileExists(legacy) && legacy != path {
+		if err := migrateLegacyRulesLog(legacy, path); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: migrate rules.log: %v\n", err)
 		}
 	}
 
@@ -98,7 +134,24 @@ func AppendEvent(path string, ev Event) error {
 // Returns events in newest-first order. Malformed lines are skipped (the
 // log is append-only so partial / corrupt entries are unusual but not
 // catastrophic). Pass `limit = 0` to return everything.
+//
+// Also runs the legacy-log migrations on entry so a `stash log` against
+// a stash dir that was last touched before the rename still surfaces
+// the historical events without the user having to capture something
+// first to trigger AppendEvent's migration path.
 func ReadEvents(path string, limit int) ([]Event, error) {
+	dir := filepath.Dir(path)
+	if legacy := LegacySkipLogPath(dir); fileExists(legacy) {
+		if err := migrateLegacySkipLog(legacy, path); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: migrate skip.log: %v\n", err)
+		}
+	}
+	if legacy := LegacyRulesLogPath(dir); fileExists(legacy) && legacy != path {
+		if err := migrateLegacyRulesLog(legacy, path); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: migrate rules.log: %v\n", err)
+		}
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

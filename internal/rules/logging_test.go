@@ -312,10 +312,57 @@ func TestParseLegacySkipLine(t *testing.T) {
 }
 
 // Sanity check: log path helpers compose as expected.
+func TestMigrateRulesLog(t *testing.T) {
+	dir := t.TempDir()
+	rulesPath := LegacyRulesLogPath(dir)
+	capturePath := DefaultLogPath(dir)
+
+	// Seed legacy rules.log with two events.
+	legacy := `{"timestamp":"2026-04-01T10:00:00Z","type":"fire","rules":["youtube"],"item_id":"01A","title":"Vid","source":"https://youtu.be/x"}` + "\n" +
+		`{"timestamp":"2026-04-02T10:00:00Z","type":"skip","rules":["spam"],"title":"Junk","source":"http://spam.example"}` + "\n"
+	if err := os.WriteFile(rulesPath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append a fresh event to capture.log; the migration should
+	// happen as a side-effect and the result should hold all three
+	// events.
+	if err := AppendEvent(capturePath, Event{
+		Type:   EventCapture,
+		ItemID: "01B",
+		Title:  "Untriaged",
+		Source: "https://example.com",
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	// Legacy file should be gone.
+	if _, err := os.Stat(rulesPath); !os.IsNotExist(err) {
+		t.Errorf("rules.log should have been removed after migration; err=%v", err)
+	}
+
+	events, err := ReadEvents(capturePath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events after migration, got %d", len(events))
+	}
+	// Newest first: the just-appended capture, then the two from
+	// the legacy file in their original order (ReadEvents reverses).
+	if events[0].Type != EventCapture || events[0].ItemID != "01B" {
+		t.Errorf("newest event should be the capture; got %+v", events[0])
+	}
+}
+
 func TestPathHelpers(t *testing.T) {
 	got := DefaultLogPath("/tmp/stash")
-	if got != filepath.Join("/tmp/stash", "rules.log") {
+	if got != filepath.Join("/tmp/stash", "capture.log") {
 		t.Errorf("DefaultLogPath = %q", got)
+	}
+	got = LegacyRulesLogPath("/tmp/stash")
+	if got != filepath.Join("/tmp/stash", "rules.log") {
+		t.Errorf("LegacyRulesLogPath = %q", got)
 	}
 	got = LegacySkipLogPath("/tmp/stash")
 	if got != filepath.Join("/tmp/stash", "skip.log") {

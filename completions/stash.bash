@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search list show edit delete open link unlink import bulk stats check dupes backup restore refresh chrome-host rules tag collection ui man help"
+    local commands="add search find list show edit delete archive unarchive open copy log shell-init link unlink import bulk stats check dupes backup restore refresh chrome-host rules tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -26,7 +26,7 @@ _stash() {
         ;;
     search)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=($(compgen -W "save list run delete" -- "$cur"))
+            COMPREPLY=($(compgen -W "save list run rename delete" -- "$cur"))
         elif [[ "${words[2]}" == "save" ]]; then
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
@@ -39,9 +39,44 @@ _stash() {
         ;;
     list)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--type --tag --collection --after --before --limit -l --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--type --tag --exclude-tag --untagged --collection --after --before --recent --regex --include-archived --archived --limit -l --help" -- "$cur"))
         elif [[ "$prev" == "--type" ]]; then
             COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
+        fi
+        ;;
+    find)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--type --tag --exclude-tag --untagged --collection --after --before --recent --regex --include-archived --archived --limit -l --action --help" -- "$cur"))
+        elif [[ "$prev" == "--type" ]]; then
+            COMPREPLY=($(compgen -W "url snippet file image email" -- "$cur"))
+        elif [[ "$prev" == "--action" ]]; then
+            COMPREPLY=($(compgen -W "open copy-url copy-id edit delete print-id print-json" -- "$cur"))
+        fi
+        ;;
+    archive|unarchive)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--dry-run --json --help" -- "$cur"))
+        fi
+        ;;
+    copy)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--field --help" -- "$cur"))
+        elif [[ "$prev" == "--field" ]]; then
+            COMPREPLY=($(compgen -W "url id title content notes" -- "$cur"))
+        fi
+        ;;
+    log)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--type --rule --since --limit -l --tail -f --help" -- "$cur"))
+        elif [[ "$prev" == "--type" ]]; then
+            COMPREPLY=($(compgen -W "fire skip retro capture error" -- "$cur"))
+        fi
+        ;;
+    shell-init)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--shell --help" -- "$cur"))
+        elif [[ "$prev" == "--shell" ]]; then
+            COMPREPLY=($(compgen -W "zsh bash" -- "$cur"))
         fi
         ;;
     edit)
@@ -141,7 +176,7 @@ _stash() {
         ;;
     rules)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=($(compgen -W "list test apply enable disable save remove log" -- "$cur"))
+            COMPREPLY=($(compgen -W "list test apply enable disable save rename remove log" -- "$cur"))
         elif [[ "${COMP_WORDS[2]}" == "apply" && "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--dry-run --type --tag --rule --help" -- "$cur"))
         elif [[ "${COMP_WORDS[2]}" == "log" && "$cur" == -* ]]; then

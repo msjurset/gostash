@@ -213,6 +213,38 @@ func logRuleFire(item *model.Item, result rules.Result) {
 	})
 }
 
+// logCapture writes a `capture` event for items that were saved with
+// no rule match. Together with `fire`/`skip`, this gives the rules
+// log full coverage of every successful capture — a unified audit
+// trail across all ingest surfaces (Add sheet, drag-drop, menubar,
+// Selection Grabber, Services, Chrome, Sortie). No-op when at least
+// one rule matched (already covered by logRuleFire).
+func logCapture(item *model.Item, result rules.Result) {
+	if len(result.MatchedRules) > 0 {
+		return
+	}
+	logRuleEvent(rules.Event{
+		Type:   rules.EventCapture,
+		ItemID: item.ID,
+		Title:  item.Title,
+		Source: sourceFor(item),
+	})
+}
+
+// LogCaptureError records a failed ingest in the unified log. Source
+// is whatever identifies what was being captured (URL, file path,
+// "stdin snippet", etc.); errMsg is the original error string. Best-
+// effort — log write failures are reported to stderr but never
+// escalate, so a flaky log writer can't make a stash add fail in a
+// new way.
+func LogCaptureError(source, errMsg string) {
+	logRuleEvent(rules.Event{
+		Type:   rules.EventError,
+		Source: source,
+		Error:  errMsg,
+	})
+}
+
 // logRuleRetro writes a `retro` event for each item changed by `stash
 // rules apply`. Retroactive runs don't fire skip / notify (those are
 // capture-time only), so the recorded effects are tags / collection /

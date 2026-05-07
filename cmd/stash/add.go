@@ -86,23 +86,30 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Track whether source is a file/dir eligible for deletion
 	isFileSource := false
 
-	// Determine source type and process
+	// Determine source type and process. Pre-save ingest failures
+	// (read errors, fetch errors, archive errors) are logged into
+	// the unified rules.log as `error` events so the user can audit
+	// silent capture failures via `stash log`.
 	switch {
 	case source == "-" || isStdin():
 		if err := addSnippet(item, fs, source); err != nil {
+			LogCaptureError("stdin snippet", err.Error())
 			return err
 		}
 	case isURL(source):
 		if err := addLink(item, fs, source); err != nil {
+			LogCaptureError(source, err.Error())
 			return err
 		}
 	case isDir(source):
 		if err := addDirectory(item, fs, source); err != nil {
+			LogCaptureError(source, err.Error())
 			return err
 		}
 		isFileSource = true
 	default:
 		if err := addFile(item, fs, source); err != nil {
+			LogCaptureError(source, err.Error())
 			return err
 		}
 		isFileSource = true
@@ -161,10 +168,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	EnsureRuleCollections(ctx, s, ruleResult)
 
 	if err := s.CreateItem(ctx, item); err != nil {
+		LogCaptureError(sourceFor(item), err.Error())
 		return fmt.Errorf("save item: %w", err)
 	}
 
 	logRuleFire(item, ruleResult)
+	logCapture(item, ruleResult)
 	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	if flagJSON {

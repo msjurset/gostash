@@ -182,10 +182,12 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 	EnsureRuleCollections(ctx, s, ruleResult)
 
 	if err := s.CreateItem(ctx, item); err != nil {
+		LogCaptureError(sourceFor(item), err.Error())
 		return &nativeResponse{Error: fmt.Sprintf("save: %v", err)}
 	}
 
 	logRuleFire(item, ruleResult)
+	logCapture(item, ruleResult)
 	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	return &nativeResponse{OK: true, Item: item}
@@ -241,10 +243,12 @@ func handleStashText(ctx context.Context, s store.Store, req *nativeRequest) *na
 	EnsureRuleCollections(ctx, s, ruleResult)
 
 	if err := s.CreateItem(ctx, item); err != nil {
+		LogCaptureError(sourceFor(item), err.Error())
 		return &nativeResponse{Error: fmt.Sprintf("save: %v", err)}
 	}
 
 	logRuleFire(item, ruleResult)
+	logCapture(item, ruleResult)
 	FirePostSaveRuleEffects(ctx, s, item, ruleResult)
 
 	return &nativeResponse{OK: true, Item: item}

@@ -20,23 +20,53 @@ import (
 var rulesLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show recent rule activity",
-	Long: `Show events from $STASH_DIR/rules.log. Three event types:
+	Long: `Show events from $STASH_DIR/capture.log. Five event types:
 
-  fire   Capture matched ≥1 rule and was saved
-  skip   Capture matched a 'skip' rule and was dropped
-  retro  ` + "`stash rules apply`" + ` produced a change on an existing item
+  fire     Capture matched ≥1 rule and was saved
+  skip     Capture matched a 'skip' rule and was dropped
+  retro    ` + "`stash rules apply`" + ` produced a change on an existing item
+  capture  Item saved with no rule match
+  error    Ingest failed before save
 
 Newest first. Use --tail (-f) to follow the log live.`,
 	RunE: runRulesLog,
 }
 
+// logCmd is the top-level alias — `stash log` — that surfaces the
+// unified capture log under a name that matches its scope. Same
+// flags, same backing implementation; `stash rules log` stays as
+// the historical entry point.
+var logCmd = &cobra.Command{
+	Use:   "log",
+	Short: "Show recent capture activity (rules, no-rule captures, ingest errors)",
+	Long: `Show events from $STASH_DIR/capture.log. Five event types:
+
+  fire     Capture matched ≥1 rule and was saved
+  skip     Capture matched a 'skip' rule and was dropped
+  retro    ` + "`stash rules apply`" + ` produced a change on an existing item
+  capture  Item saved with no rule match
+  error    Ingest failed before save
+
+Newest first. Use --tail (-f) to follow the log live. Equivalent to
+'stash rules log' — the broader name reflects that the log now covers
+every capture, not just rule activity.`,
+	RunE: runRulesLog,
+}
+
 func init() {
-	rulesLogCmd.Flags().String("type", "", "Filter by event type (fire, skip, retro)")
-	rulesLogCmd.Flags().String("rule", "", "Filter to events involving the named rule")
-	rulesLogCmd.Flags().IntP("limit", "l", 50, "Maximum events to show (0 = all)")
-	rulesLogCmd.Flags().String("since", "", "Only show events newer than DURATION (e.g. 30m, 1h, 24h, 7d, 1w)")
-	rulesLogCmd.Flags().BoolP("tail", "f", false, "Follow the log; stream new events as they arrive (Ctrl-C to stop)")
+	addRulesLogFlags(rulesLogCmd)
 	rulesCmd.AddCommand(rulesLogCmd)
+
+	addRulesLogFlags(logCmd)
+	rootCmd.AddCommand(logCmd)
+}
+
+func addRulesLogFlags(cmd *cobra.Command) {
+	cmd.Flags().String("type", "", "Filter by event type (fire, skip, retro, capture, error)")
+	cmd.Flags().String("rule", "", "Filter to events involving the named rule")
+	cmd.Flags().IntP("limit", "l", 50, "Maximum events to show (0 = all)")
+	cmd.Flags().String("since", "", "Only show events newer than DURATION (e.g. 30m, 1h, 24h, 7d, 1w)")
+	cmd.Flags().BoolP("tail", "f", false, "Follow the log; stream new events as they arrive (Ctrl-C to stop)")
 }
 
 func runRulesLog(cmd *cobra.Command, args []string) error {
@@ -47,7 +77,7 @@ func runRulesLog(cmd *cobra.Command, args []string) error {
 	tail, _ := cmd.Flags().GetBool("tail")
 
 	if typeFilter != "" && !validEventType(typeFilter) {
-		return fmt.Errorf("invalid --type %q (want fire, skip, or retro)", typeFilter)
+		return fmt.Errorf("invalid --type %q (want fire, skip, retro, capture, or error)", typeFilter)
 	}
 
 	var since time.Time
@@ -85,7 +115,8 @@ func runRulesLog(cmd *cobra.Command, args []string) error {
 
 func validEventType(t string) bool {
 	switch rules.EventType(t) {
-	case rules.EventFire, rules.EventSkip, rules.EventRetro:
+	case rules.EventFire, rules.EventSkip, rules.EventRetro,
+		rules.EventCapture, rules.EventError:
 		return true
 	}
 	return false
@@ -157,7 +188,7 @@ func emitEvents(events []rules.Event) error {
 		return nil
 	}
 	if len(events) == 0 {
-		fmt.Println("No rule activity yet.")
+		fmt.Println("No capture activity yet.")
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -173,7 +204,16 @@ func formatEventRow(ev rules.Event) string {
 	ts := ev.Timestamp.Local().Format("2006-01-02 15:04")
 	ruleStr := strings.Join(ev.Rules, ",")
 	title := truncateForTable(ev.Title, 60)
+	// Error events have no Effects but carry the error message in
+	// `Error`. Surface that in the same column so the table layout
+	// stays uniform across event types.
 	effects := strings.Join(ev.Effects, " ")
+	if ev.Type == rules.EventError && ev.Error != "" {
+		effects = ev.Error
+	}
+	if title == "" && ev.Source != "" {
+		title = truncateForTable(ev.Source, 60)
+	}
 	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s", ts, ev.Type, ruleStr, title, effects)
 }
 

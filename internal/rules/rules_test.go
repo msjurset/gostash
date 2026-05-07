@@ -460,6 +460,89 @@ func TestSenderHelpers(t *testing.T) {
 	}
 }
 
+func ptrTrue() *bool  { v := true; return &v }
+func ptrFalse() *bool { v := false; return &v }
+
+func TestMatch_IsDuplicateTrue(t *testing.T) {
+	rs := &Ruleset{Rules: []Rule{
+		{
+			Name: "skip-dup-urls",
+			Match: Match{
+				Type:        "url",
+				IsDuplicate: ptrTrue(),
+			},
+			Actions: []Action{{Skip: true}},
+		},
+	}}
+	item := urlItem("https://example.com")
+
+	// Without dup context — rule does NOT match.
+	res := rs.Apply(item)
+	if res.Skipped {
+		t.Errorf("non-dup capture should not skip; skipped=%v", res.Skipped)
+	}
+
+	// With dup context — rule matches and skips.
+	res = rs.ApplyWithContext(item, Context{IsDuplicate: true, DuplicateOf: "01ABC"})
+	if !res.Skipped {
+		t.Errorf("dup capture should skip; matched=%v", res.MatchedRules)
+	}
+	if res.SkippedBy != "skip-dup-urls" {
+		t.Errorf("SkippedBy=%q, want skip-dup-urls", res.SkippedBy)
+	}
+}
+
+func TestMatch_IsDuplicateFalse(t *testing.T) {
+	// Tag fresh URLs only (excludes dups).
+	rs := &Ruleset{Rules: []Rule{
+		{
+			Name: "tag-fresh",
+			Match: Match{
+				Type:        "url",
+				IsDuplicate: ptrFalse(),
+			},
+			Actions: []Action{tagsAction("fresh")},
+		},
+	}}
+	item := urlItem("https://example.com")
+
+	res := rs.ApplyWithContext(item, Context{})
+	if !contains(res.Tags, "fresh") {
+		t.Errorf("non-dup capture should be tagged; tags=%v", res.Tags)
+	}
+
+	res = rs.ApplyWithContext(item, Context{IsDuplicate: true, DuplicateOf: "01ABC"})
+	if contains(res.Tags, "fresh") {
+		t.Errorf("dup capture should NOT be tagged; tags=%v", res.Tags)
+	}
+}
+
+func TestDuplicateOfTemplate(t *testing.T) {
+	rs := &Ruleset{Rules: []Rule{
+		{
+			Name: "link-and-tag-dup",
+			Match: Match{
+				Type:        "url",
+				IsDuplicate: ptrTrue(),
+			},
+			Actions: []Action{
+				{LinkTo: &LinkSpec{ID: "{{.DuplicateOf}}"}},
+				tagsAction("dup-of-{{.DuplicateOfShort}}"),
+			},
+		},
+	}}
+	res := rs.ApplyWithContext(
+		urlItem("https://example.com"),
+		Context{IsDuplicate: true, DuplicateOf: "01ABCDEF12345"},
+	)
+	if len(res.Links) != 1 || res.Links[0].ID != "01ABCDEF12345" {
+		t.Errorf("link_to.id should render template; got %+v", res.Links)
+	}
+	if !contains(res.Tags, "dup-of-01ABCDEF") {
+		t.Errorf("add_tags should render and shorten; got %v", res.Tags)
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

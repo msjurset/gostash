@@ -167,7 +167,7 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 	// Apply user-defined rules. Same helper as the CLI add path so Chrome
 	// captures get the same tags, retitles, notes, notifications, links,
 	// and skip behavior as `stash add`.
-	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+	ruleResult := ApplyRulesToItem(s, item, RuleApplyContext{
 		UserTitle:      req.Title,
 		UserNote:       req.Notes,
 		UserCollection: req.Collection,
@@ -226,7 +226,7 @@ func handleStashText(ctx context.Context, s store.Store, req *nativeRequest) *na
 
 	// Same rules application as the URL path — text snippets captured via
 	// the Chrome extension get the same tag/note/skip treatment as `stash add -`.
-	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+	ruleResult := ApplyRulesToItem(s, item, RuleApplyContext{
 		UserTitle:      req.Title,
 		UserNote:       req.Notes,
 		UserCollection: req.Collection,

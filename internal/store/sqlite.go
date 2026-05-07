@@ -463,6 +463,26 @@ func (s *SQLiteStore) GetItemByURL(ctx context.Context, url string) (*model.Item
 	return item, nil
 }
 
+// GetItemByContentHash fetches the first item with the given content
+// hash. Used by the rules engine's duplicate-detection pre-check at
+// capture time. Returns sql.ErrNoRows if no item has that hash —
+// callers should treat that as "not a duplicate" rather than an error.
+func (s *SQLiteStore) GetItemByContentHash(ctx context.Context, hash string) (*model.Item, error) {
+	if hash == "" {
+		return nil, sql.ErrNoRows
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT * FROM items WHERE content_hash = ? AND archived = 0 LIMIT 1`, hash)
+	item, err := s.scanItem(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.loadRelations(ctx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 // ListURLsWithoutContent returns URL items that have no extracted text.
 func (s *SQLiteStore) ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error) {
 	if limit <= 0 {

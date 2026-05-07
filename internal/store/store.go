@@ -19,6 +19,7 @@ type Store interface {
 
 	ExistsByURL(ctx context.Context, url string) (bool, error)
 	GetItemByURL(ctx context.Context, url string) (*model.Item, error)
+	GetItemByContentHash(ctx context.Context, hash string) (*model.Item, error)
 	ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error)
 
 	// Tags

@@ -47,6 +47,30 @@ type Match struct {
 	PathGlob       string `yaml:"path_glob,omitempty" json:"path_glob,omitempty"`
 	Content        string `yaml:"content,omitempty" json:"content,omitempty"`
 	ContentRegex   string `yaml:"content_regex,omitempty" json:"content_regex,omitempty"`
+	// IsDuplicate matches on the capture-time duplicate-detection
+	// result supplied via Context. nil = "don't care" (current
+	// behavior); true = "only fire if this item is a dup of an
+	// existing one"; false = "only fire if this item is not a dup".
+	// Pre-computation lives in the call site so the rules package
+	// stays decoupled from the store.
+	IsDuplicate *bool `yaml:"is_duplicate,omitempty" json:"is_duplicate,omitempty"`
+}
+
+// Context carries non-item information into the rules engine.
+// Today this is just duplicate-detection state; future fields could
+// include things like "captured via X" source labels or item-relative
+// time deltas. Keeping it as a value type so it composes with the
+// existing zero-value Apply(item) signature for callers that don't
+// care.
+type Context struct {
+	// IsDuplicate is true when the call site detected an existing
+	// item with the same URL or content_hash. Drives the matching
+	// of rules with `is_duplicate: true` / `false`.
+	IsDuplicate bool
+	// DuplicateOf is the existing item's full ID when IsDuplicate
+	// is true. Exposed as `{{.DuplicateOf}}` in templates so rules
+	// can reference it from link_to / add_tags / set_note actions.
+	DuplicateOf string
 }
 
 // Action is one entry in a rule's `actions:` list. Any subset of fields may
@@ -194,6 +218,13 @@ func (r *Result) MergedNote(existing string) string {
 // composite result. Templates are rendered using TemplateData built from
 // the item.
 func (rs *Ruleset) Apply(item *model.Item) Result {
+	return rs.ApplyWithContext(item, Context{})
+}
+
+// ApplyWithContext is Apply plus a Context carrying non-item state
+// (today: duplicate-detection results). Existing call sites that
+// don't have context can keep using Apply with no behavioral change.
+func (rs *Ruleset) ApplyWithContext(item *model.Item, ctx Context) Result {
 	var res Result
 	if rs == nil {
 		return res
@@ -210,7 +241,7 @@ func (rs *Ruleset) Apply(item *model.Item) Result {
 		if !rule.IsEnabled() {
 			continue
 		}
-		ok, captures, err := rule.matches(item)
+		ok, captures, err := rule.matches(item, ctx)
 		if err != nil {
 			res.Errors = append(res.Errors, fmt.Errorf("rule %q: %w", rule.Name, err))
 			continue
@@ -221,15 +252,24 @@ func (rs *Ruleset) Apply(item *model.Item) Result {
 		res.MatchedRules = append(res.MatchedRules, rule.Name)
 
 		td := buildTemplateData(item, rule.Name, captures)
+		td.DuplicateOf = ctx.DuplicateOf
+		td.DuplicateOfShort = shortenID(ctx.DuplicateOf)
 
 		for _, act := range rule.Actions {
-			// Tag additions
+			// Tag additions — render each through the template
+			// engine so dedup rules can write
+			// `add_tags: ["dup-of-{{.DuplicateOfShort}}"]`.
 			for _, tag := range act.AddTags {
-				tag = strings.TrimSpace(tag)
-				if tag == "" {
+				rendered, terr := renderTemplate(tag, td)
+				if terr != nil {
+					res.Errors = append(res.Errors, fmt.Errorf("rule %q add_tags: %w", rule.Name, terr))
 					continue
 				}
-				lower := strings.ToLower(tag)
+				rendered = strings.TrimSpace(rendered)
+				if rendered == "" {
+					continue
+				}
+				lower := strings.ToLower(rendered)
 				if _, dup := existingTags[lower]; dup {
 					continue
 				}
@@ -237,7 +277,7 @@ func (rs *Ruleset) Apply(item *model.Item) Result {
 					continue
 				}
 				addedTags[lower] = struct{}{}
-				res.Tags = append(res.Tags, tag)
+				res.Tags = append(res.Tags, rendered)
 			}
 			if act.AddCollection != "" && res.Collection == "" {
 				res.Collection = act.AddCollection
@@ -279,7 +319,25 @@ func (rs *Ruleset) Apply(item *model.Item) Result {
 				}
 			}
 			if act.LinkTo != nil {
-				res.Links = append(res.Links, *act.LinkTo)
+				// Render the LinkSpec ID/Tag through the template
+				// engine so dedup rules can target the existing
+				// item via `link_to: { id: "{{.DuplicateOf}}" }`.
+				ls := *act.LinkTo
+				if ls.ID != "" {
+					if rendered, terr := renderTemplate(ls.ID, td); terr == nil {
+						ls.ID = rendered
+					} else {
+						res.Errors = append(res.Errors, fmt.Errorf("rule %q link_to.id: %w", rule.Name, terr))
+					}
+				}
+				if ls.Tag != "" {
+					if rendered, terr := renderTemplate(ls.Tag, td); terr == nil {
+						ls.Tag = rendered
+					} else {
+						res.Errors = append(res.Errors, fmt.Errorf("rule %q link_to.tag: %w", rule.Name, terr))
+					}
+				}
+				res.Links = append(res.Links, ls)
 			}
 			if act.Skip {
 				res.Skipped = true
@@ -293,14 +351,27 @@ func (rs *Ruleset) Apply(item *model.Item) Result {
 	return res
 }
 
+func shortenID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
 // matches evaluates every set condition on the rule. All non-empty
 // conditions must hold. Returns:
 //   - bool: whether the rule matched
 //   - map: named regex captures from url_regex / content_regex (nil if none)
 //   - error: regex compile failure (rule treated as non-matching)
-func (r *Rule) matches(item *model.Item) (bool, map[string]string, error) {
+func (r *Rule) matches(item *model.Item, ctx Context) (bool, map[string]string, error) {
 	m := r.Match
 	var captures map[string]string
+
+	if m.IsDuplicate != nil {
+		if *m.IsDuplicate != ctx.IsDuplicate {
+			return false, nil, nil
+		}
+	}
 
 	if m.Type != "" {
 		want := model.ParseItemType(m.Type)

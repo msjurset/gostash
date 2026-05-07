@@ -24,6 +24,12 @@ type RuleApplyContext struct {
 // result into the item's fields. Returns the rule result so the caller
 // can fire post-save effects (link_to, notify) and short-circuit on skip.
 //
+// `s` is consulted for capture-time duplicate detection (by URL for
+// link items, by content_hash for file/image items). The result feeds
+// the rules engine via `rules.Context` so rules can match on
+// `is_duplicate: true` and reference the existing item via
+// `{{.DuplicateOf}}` in their actions. Pass nil to skip the dup check.
+//
 // Rule pre-save effects mutate `item` in place:
 //   - tag additions are appended (deduped against existing)
 //   - collection assignment uses the rule's value when user didn't pass -c
@@ -35,13 +41,14 @@ type RuleApplyContext struct {
 //
 // Failure to load rules is logged but never fatal — capture should never
 // fail on rule misconfiguration.
-func ApplyRulesToItem(item *model.Item, userInput RuleApplyContext) rules.Result {
+func ApplyRulesToItem(s store.Store, item *model.Item, userInput RuleApplyContext) rules.Result {
 	rs, err := rules.Load(rules.DefaultPath(config.Dir()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: rules failed to load: %v\n", err)
 		return rules.Result{}
 	}
-	result := rs.Apply(item)
+	rctx := detectDuplicate(s, item)
+	result := rs.ApplyWithContext(item, rctx)
 	for _, e := range result.Errors {
 		fmt.Fprintf(os.Stderr, "warning: rules: %v\n", e)
 	}
@@ -71,6 +78,41 @@ func ApplyRulesToItem(item *model.Item, userInput RuleApplyContext) rules.Result
 		}
 	}
 	return result
+}
+
+// detectDuplicate runs the capture-time duplicate-detection pre-check
+// that drives the rules engine's `is_duplicate` match condition. The
+// item is checked by:
+//
+//   - URL — for any item with `item.URL` set, the existing rows are
+//     consulted via GetItemByURL. URL items always; URL-bearing files
+//     (e.g. archives saved with their source URL) too.
+//   - content_hash — for items that landed a hash (file/image stash;
+//     URL captures with `--fetch` populate this from the body bytes),
+//     a second pass checks for any other item with the same blob.
+//
+// A pre-existing item that's *the same item* (e.g. updating an
+// already-stashed URL via `stash add` again) still counts as a dup
+// here — the engine's job is to detect any existing match and let
+// rules decide what to do (skip / link / tag). Empty store reads or
+// any errors fall back to "not a dup" so capture never fails on a
+// dedup miss.
+func detectDuplicate(s store.Store, item *model.Item) rules.Context {
+	if s == nil || item == nil {
+		return rules.Context{}
+	}
+	ctx := context.Background()
+	if item.URL != "" {
+		if existing, err := s.GetItemByURL(ctx, item.URL); err == nil && existing != nil && existing.ID != item.ID {
+			return rules.Context{IsDuplicate: true, DuplicateOf: existing.ID}
+		}
+	}
+	if item.ContentHash != "" {
+		if existing, err := s.GetItemByContentHash(ctx, item.ContentHash); err == nil && existing != nil && existing.ID != item.ID {
+			return rules.Context{IsDuplicate: true, DuplicateOf: existing.ID}
+		}
+	}
+	return rules.Context{}
 }
 
 // EnsureRuleCollections ensures every collection a rule wants to assign

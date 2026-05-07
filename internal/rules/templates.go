@@ -32,8 +32,15 @@ type TemplateData struct {
 	Subject      string
 	Filename     string
 	Date         string
-	Captures     map[string]string
-	Rule         RuleContext
+	// DuplicateOf is the existing item's full ID when the engine
+	// detected a duplicate at capture time, otherwise empty. Use as
+	// `{{.DuplicateOf}}` in link_to / set_note actions.
+	DuplicateOf string
+	// DuplicateOfShort is the same ID truncated to 8 chars for use
+	// in human-readable contexts like add_tags or notify.
+	DuplicateOfShort string
+	Captures         map[string]string
+	Rule             RuleContext
 }
 
 // RuleContext exposes a few rule-level fields under {{.Rule.Name}}.

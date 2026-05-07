@@ -89,7 +89,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Determine source type and process
 	switch {
 	case source == "-" || isStdin():
-		if err := addSnippet(item, source); err != nil {
+		if err := addSnippet(item, fs, source); err != nil {
 			return err
 		}
 	case isURL(source):
@@ -137,7 +137,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// title, note) fold into `item`; skip aborts the add; post-save effects
 	// (link_to, notify) run after CreateItem succeeds. Same helper is used
 	// by the chrome-host capture path so all sources behave identically.
-	ruleResult := ApplyRulesToItem(item, RuleApplyContext{
+	ruleResult := ApplyRulesToItem(s, item, RuleApplyContext{
 		UserTitle:      title,
 		UserNote:       note,
 		UserCollection: collection,
@@ -185,7 +185,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func addSnippet(item *model.Item, source string) error {
+func addSnippet(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, source string) error {
 	var r io.Reader
 	if source == "-" {
 		r = os.Stdin
@@ -205,6 +205,14 @@ func addSnippet(item *model.Item, source string) error {
 	item.ExtractedText = string(data)
 	item.MimeType = "text/plain"
 	item.FileSize = int64(len(data))
+
+	// Snippets get a content_hash too so dedup works for clipboard
+	// captures of the same string. The filestore is content-
+	// addressable so the same bytes only land on disk once.
+	if hash, _, err := fs.Save(bytes.NewReader(data)); err == nil {
+		item.ContentHash = hash
+		item.StorePath = hash
+	}
 
 	if lang := langdetect.Detect(string(data)); lang != "" {
 		item.Metadata = json.RawMessage(fmt.Sprintf(`{"language":%q}`, lang))

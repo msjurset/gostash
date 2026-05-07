@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,6 +69,59 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrate email type: %w", err)
 	}
 
+	// Add the archived column if it's not already present. The .sql
+	// migration runner above re-runs every file on every startup with
+	// no tracking, so ALTER TABLE ADD COLUMN can't live there — it
+	// would fail with "duplicate column name" on the second startup.
+	if err := s.migrateArchivedColumn(); err != nil {
+		return fmt.Errorf("migrate archived column: %w", err)
+	}
+	if err := s.migrateSavedSearchLive(); err != nil {
+		return fmt.Errorf("migrate saved_searches.live: %w", err)
+	}
+
+	return nil
+}
+
+// migrateArchivedColumn adds the items.archived flag for soft-delete
+// semantics. Idempotent — checks pragma_table_info first.
+func (s *SQLiteStore) migrateArchivedColumn() error {
+	return s.addColumnIfMissing("items", "archived",
+		`ALTER TABLE items ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_items_archived ON items(archived)`,
+	)
+}
+
+// migrateSavedSearchLive adds the saved_searches.live flag that drives
+// auto-refreshing Smart Collection sidebar entries in stash-mac.
+// Idempotent — checks pragma_table_info first.
+func (s *SQLiteStore) migrateSavedSearchLive() error {
+	return s.addColumnIfMissing("saved_searches", "live",
+		`ALTER TABLE saved_searches ADD COLUMN live INTEGER NOT NULL DEFAULT 0`,
+	)
+}
+
+// addColumnIfMissing runs the given DDL statements if `column` doesn't
+// already exist on `table`. SQLite has no IF NOT EXISTS clause for
+// ALTER TABLE ADD COLUMN, so we gate on pragma_table_info to keep the
+// migration idempotent across repeated startups.
+func (s *SQLiteStore) addColumnIfMissing(table, column string, stmts ...string) error {
+	var present int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`,
+		table, column,
+	).Scan(&present)
+	if err != nil {
+		return err
+	}
+	if present > 0 {
+		return nil
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -195,7 +249,11 @@ func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*model.Item, erro
 // ListItems returns items matching the filter, ordered by creation time descending.
 func (s *SQLiteStore) ListItems(ctx context.Context, filter model.ItemFilter) ([]model.Item, error) {
 	q, args := s.buildListQuery(filter)
-	return s.queryItems(ctx, q, args)
+	items, err := s.queryItems(ctx, q, args)
+	if err != nil {
+		return nil, err
+	}
+	return applyRegexFilter(items, filter.Regex)
 }
 
 // SearchItems performs full-text search using FTS5.
@@ -227,16 +285,31 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 		where = append(where, "i.type = ?")
 		args = append(args, filter.Type)
 	}
-	if len(filter.Tags) > 0 {
-		placeholders := make([]string, len(filter.Tags))
-		for i, t := range filter.Tags {
-			placeholders[i] = "?"
-			args = append(args, t)
+	if filter.Untagged {
+		where = append(where, "NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id)")
+	} else {
+		if len(filter.Tags) > 0 {
+			placeholders := make([]string, len(filter.Tags))
+			for i, t := range filter.Tags {
+				placeholders[i] = "?"
+				args = append(args, t)
+			}
+			where = append(where, fmt.Sprintf(
+				"i.id IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
+				strings.Join(placeholders, ","),
+			))
 		}
-		where = append(where, fmt.Sprintf(
-			"i.id IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
-			strings.Join(placeholders, ","),
-		))
+		if len(filter.ExcludeTags) > 0 {
+			placeholders := make([]string, len(filter.ExcludeTags))
+			for i, t := range filter.ExcludeTags {
+				placeholders[i] = "?"
+				args = append(args, t)
+			}
+			where = append(where, fmt.Sprintf(
+				"i.id NOT IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
+				strings.Join(placeholders, ","),
+			))
+		}
 	}
 	if filter.Collection != "" {
 		where = append(where, "i.id IN (SELECT ic.item_id FROM item_collections ic JOIN collections c ON c.id = ic.collection_id WHERE c.name = ?)")
@@ -250,6 +323,15 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 		where = append(where, "i.created_at <= ?")
 		args = append(args, *filter.Before)
 	}
+	if t, ok := resolveRecent(filter.Recent); ok {
+		where = append(where, "i.created_at >= ?")
+		args = append(args, t)
+	}
+	if filter.OnlyArchived {
+		where = append(where, "i.archived = 1")
+	} else if !filter.IncludeArchived {
+		where = append(where, "i.archived = 0")
+	}
 
 	q := "SELECT i.* FROM items i WHERE " + strings.Join(where, " AND ") + " ORDER BY i.created_at DESC"
 
@@ -262,7 +344,11 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 		q += fmt.Sprintf(" OFFSET %d", filter.Offset)
 	}
 
-	return s.queryItems(ctx, q, args)
+	items, err := s.queryItems(ctx, q, args)
+	if err != nil {
+		return nil, err
+	}
+	return applyRegexFilter(items, filter.Regex)
 }
 
 // UpdateItem updates an existing item.
@@ -311,6 +397,44 @@ func (s *SQLiteStore) DeleteItem(ctx context.Context, id string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
+		return fmt.Errorf("item not found: %s", id)
+	}
+	return nil
+}
+
+// SetArchived flips the archived flag on a single item. Soft-delete
+// semantics: archived items are excluded from list/search by default
+// but otherwise untouched (file blob, tags, links, collections all
+// remain). Use `--include-archived` / `--archived` on list to view.
+func (s *SQLiteStore) SetArchived(ctx context.Context, id string, archived bool) error {
+	val := 0
+	if archived {
+		val = 1
+	}
+	res, err := s.db.ExecContext(
+		ctx,
+		`UPDATE items SET archived = ?, updated_at = datetime('now') WHERE id = ?`,
+		val, id,
+	)
+	if err != nil {
+		return fmt.Errorf("set archived: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Try short-id prefix match — same as GetItem.
+		if len(id) >= 6 {
+			res2, err := s.db.ExecContext(
+				ctx,
+				`UPDATE items SET archived = ?, updated_at = datetime('now') WHERE id LIKE ?`,
+				val, id+"%",
+			)
+			if err != nil {
+				return fmt.Errorf("set archived: %w", err)
+			}
+			if n2, _ := res2.RowsAffected(); n2 > 0 {
+				return nil
+			}
+		}
 		return fmt.Errorf("item not found: %s", id)
 	}
 	return nil
@@ -611,15 +735,18 @@ func (s *SQLiteStore) ListLinks(ctx context.Context, itemID string) ([]model.Lin
 func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	var item model.Item
 	var meta string
+	var archived int
 	err := row.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
+		&archived,
 	)
 	if err != nil {
 		return nil, err
 	}
 	item.Metadata = json.RawMessage(meta)
+	item.Archived = archived != 0
 	return &item, nil
 }
 
@@ -628,15 +755,18 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 	for rows.Next() {
 		var item model.Item
 		var meta string
+		var archived int
 		err := rows.Scan(
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 			&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
+			&archived,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		item.Metadata = json.RawMessage(meta)
+		item.Archived = archived != 0
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -720,16 +850,33 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 		where = append(where, "i.type = ?")
 		args = append(args, filter.Type)
 	}
-	if len(filter.Tags) > 0 {
-		placeholders := make([]string, len(filter.Tags))
-		for i, t := range filter.Tags {
-			placeholders[i] = "?"
-			args = append(args, t)
+	if filter.Untagged {
+		// Untagged short-circuits any include/exclude tag filters —
+		// those are meaningless on items with zero tags.
+		where = append(where, "NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id)")
+	} else {
+		if len(filter.Tags) > 0 {
+			placeholders := make([]string, len(filter.Tags))
+			for i, t := range filter.Tags {
+				placeholders[i] = "?"
+				args = append(args, t)
+			}
+			where = append(where, fmt.Sprintf(
+				"i.id IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
+				strings.Join(placeholders, ","),
+			))
 		}
-		where = append(where, fmt.Sprintf(
-			"i.id IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
-			strings.Join(placeholders, ","),
-		))
+		if len(filter.ExcludeTags) > 0 {
+			placeholders := make([]string, len(filter.ExcludeTags))
+			for i, t := range filter.ExcludeTags {
+				placeholders[i] = "?"
+				args = append(args, t)
+			}
+			where = append(where, fmt.Sprintf(
+				"i.id NOT IN (SELECT it.item_id FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name IN (%s))",
+				strings.Join(placeholders, ","),
+			))
+		}
 	}
 	if filter.Collection != "" {
 		where = append(where, "i.id IN (SELECT ic.item_id FROM item_collections ic JOIN collections c ON c.id = ic.collection_id WHERE c.name = ?)")
@@ -750,6 +897,15 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 	if filter.Before != nil {
 		where = append(where, "i.created_at <= ?")
 		args = append(args, *filter.Before)
+	}
+	if t, ok := resolveRecent(filter.Recent); ok {
+		where = append(where, "i.created_at >= ?")
+		args = append(args, t)
+	}
+	if filter.OnlyArchived {
+		where = append(where, "i.archived = 1")
+	} else if !filter.IncludeArchived {
+		where = append(where, "i.archived = 0")
 	}
 
 	q := "SELECT i.* FROM items i"
@@ -860,16 +1016,22 @@ func (s *SQLiteStore) ListDismissedPairs(ctx context.Context) ([][2]string, erro
 	return pairs, rows.Err()
 }
 
-// SaveSearch persists a named search query and filter.
-func (s *SQLiteStore) SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter) error {
+// SaveSearch persists a named search query and filter. `live` flips
+// the sidebar treatment in stash-mac (Smart Collection vs static
+// snapshot); the CLI run path is the same regardless.
+func (s *SQLiteStore) SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter, live bool) error {
 	filterJSON, err := json.Marshal(filter)
 	if err != nil {
 		return fmt.Errorf("marshal filter: %w", err)
 	}
+	liveVal := 0
+	if live {
+		liveVal = 1
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO saved_searches (name, query, filter_json) VALUES (?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET query=excluded.query, filter_json=excluded.filter_json`,
-		name, query, string(filterJSON))
+		`INSERT INTO saved_searches (name, query, filter_json, live) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET query=excluded.query, filter_json=excluded.filter_json, live=excluded.live`,
+		name, query, string(filterJSON), liveVal)
 	if err != nil {
 		return fmt.Errorf("save search: %w", err)
 	}
@@ -878,7 +1040,7 @@ func (s *SQLiteStore) SaveSearch(ctx context.Context, name, query string, filter
 
 // ListSavedSearches returns all saved searches.
 func (s *SQLiteStore) ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, query, filter_json FROM saved_searches ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, query, filter_json, live FROM saved_searches ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list saved searches: %w", err)
 	}
@@ -888,10 +1050,12 @@ func (s *SQLiteStore) ListSavedSearches(ctx context.Context) ([]model.SavedSearc
 	for rows.Next() {
 		var ss model.SavedSearch
 		var filterJSON string
-		if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON); err != nil {
+		var live int
+		if err := rows.Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON, &live); err != nil {
 			return nil, fmt.Errorf("scan saved search: %w", err)
 		}
 		json.Unmarshal([]byte(filterJSON), &ss.Filter)
+		ss.Live = live != 0
 		searches = append(searches, ss)
 	}
 	return searches, rows.Err()
@@ -901,13 +1065,15 @@ func (s *SQLiteStore) ListSavedSearches(ctx context.Context) ([]model.SavedSearc
 func (s *SQLiteStore) GetSavedSearch(ctx context.Context, name string) (*model.SavedSearch, error) {
 	var ss model.SavedSearch
 	var filterJSON string
+	var live int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, query, filter_json FROM saved_searches WHERE name = ?`, name,
-	).Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON)
+		`SELECT id, name, query, filter_json, live FROM saved_searches WHERE name = ?`, name,
+	).Scan(&ss.ID, &ss.Name, &ss.Query, &filterJSON, &live)
 	if err != nil {
 		return nil, fmt.Errorf("saved search not found: %s", name)
 	}
 	json.Unmarshal([]byte(filterJSON), &ss.Filter)
+	ss.Live = live != 0
 	return &ss, nil
 }
 
@@ -920,6 +1086,47 @@ func (s *SQLiteStore) DeleteSavedSearch(ctx context.Context, name string) error 
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("saved search not found: %s", name)
+	}
+	return nil
+}
+
+// RenameSavedSearch updates a saved search's name in place. Errors out
+// if the new name is already in use, the names match (no-op), or the
+// old name doesn't exist. The DB row's id stays the same so anything
+// keyed on id (none today, but future-proof) keeps pointing at the
+// same row.
+func (s *SQLiteStore) RenameSavedSearch(ctx context.Context, oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if oldName == "" {
+		return fmt.Errorf("old name is required")
+	}
+	if newName == "" {
+		return fmt.Errorf("new name is required")
+	}
+	if oldName == newName {
+		return nil
+	}
+	// Pre-check the collision so we surface a clean error rather
+	// than relying on the UNIQUE constraint to fail out of a tx.
+	var exists int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM saved_searches WHERE name = ?`, newName,
+	).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("check new name: %w", err)
+	}
+	if exists > 0 {
+		return fmt.Errorf("a saved search named %q already exists", newName)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE saved_searches SET name = ? WHERE name = ?`, newName, oldName,
+	)
+	if err != nil {
+		return fmt.Errorf("rename saved search: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("saved search not found: %s", oldName)
 	}
 	return nil
 }
@@ -1020,4 +1227,75 @@ func marshalMeta(data json.RawMessage) (string, error) {
 		return "{}", nil
 	}
 	return string(data), nil
+}
+
+// applyRegexFilter narrows `items` to those whose title + notes + URL +
+// extracted text matches the RE2 pattern. A leading `!` negates the
+// match. Empty pattern is a no-op. An invalid pattern returns the
+// items unchanged with no error — Smart Collections shouldn't fail
+// silently to no rows when the user fat-fingers a regex, and there's
+// no UI surface to bubble a parse error to from this layer.
+func applyRegexFilter(items []model.Item, pattern string) ([]model.Item, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return items, nil
+	}
+	negate := false
+	if strings.HasPrefix(pattern, "!") {
+		negate = true
+		pattern = strings.TrimSpace(pattern[1:])
+		if pattern == "" {
+			return items, nil
+		}
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return items, nil
+	}
+	out := make([]model.Item, 0, len(items))
+	for _, it := range items {
+		hay := it.Title + "\n" + it.Notes + "\n" + it.URL + "\n" + it.ExtractedText
+		matched := re.MatchString(hay)
+		if matched != negate {
+			out = append(out, it)
+		}
+	}
+	return out, nil
+}
+
+// resolveRecent translates a relative spec like "7d" / "2w" / "1h" into
+// the absolute timestamp `now - duration`. Returns (zero, false) for
+// empty or unparseable specs so callers can skip the WHERE clause.
+//
+// Smart Collections store the spec verbatim and re-resolve it on every
+// query, which is the whole point — "Recent Captures" should always
+// mean "captures in the last 7 days from *today*", not from the day
+// the search was saved. `time.ParseDuration` doesn't understand `d`
+// or `w`, so we extend it manually.
+func resolveRecent(spec string) (time.Time, bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return time.Time{}, false
+	}
+	// Strip a `d` or `w` suffix, multiply into hours, hand to ParseDuration.
+	if n := len(spec); n > 1 {
+		last := spec[n-1]
+		if last == 'd' || last == 'w' {
+			rest := spec[:n-1]
+			val, err := time.ParseDuration(rest + "h")
+			if err != nil {
+				return time.Time{}, false
+			}
+			mult := time.Duration(24)
+			if last == 'w' {
+				mult = 24 * 7
+			}
+			return time.Now().Add(-val * mult).UTC(), true
+		}
+	}
+	d, err := time.ParseDuration(spec)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Now().Add(-d).UTC(), true
 }

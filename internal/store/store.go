@@ -15,6 +15,7 @@ type Store interface {
 	SearchItems(ctx context.Context, filter model.ItemFilter) ([]model.Item, error)
 	UpdateItem(ctx context.Context, item *model.Item) error
 	DeleteItem(ctx context.Context, id string) error
+	SetArchived(ctx context.Context, id string, archived bool) error
 
 	ExistsByURL(ctx context.Context, url string) (bool, error)
 	GetItemByURL(ctx context.Context, url string) (*model.Item, error)
@@ -47,10 +48,11 @@ type Store interface {
 	ListDismissedPairs(ctx context.Context) ([][2]string, error)
 
 	// Saved Searches
-	SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter) error
+	SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter, live bool) error
 	ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error)
 	GetSavedSearch(ctx context.Context, name string) (*model.SavedSearch, error)
 	DeleteSavedSearch(ctx context.Context, name string) error
+	RenameSavedSearch(ctx context.Context, oldName, newName string) error
 
 	// Stats
 	Stats(ctx context.Context) (*model.StashStats, error)

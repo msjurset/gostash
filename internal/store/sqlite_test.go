@@ -184,6 +184,347 @@ func TestDeleteItem(t *testing.T) {
 	}
 }
 
+func TestArchiveItem(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateItem(ctx, testItem("01A", model.TypeSnippet)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateItem(ctx, testItem("01B", model.TypeSnippet)); err != nil {
+		t.Fatal(err)
+	}
+
+	// New items default to unarchived.
+	got, err := s.GetItem(ctx, "01A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Archived {
+		t.Errorf("new item should not be archived")
+	}
+
+	// Archive 01A.
+	if err := s.SetArchived(ctx, "01A", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetItem(ctx, "01A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Archived {
+		t.Errorf("expected archived=true")
+	}
+
+	// Default list excludes archived items.
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "01B" {
+		t.Errorf("default list should exclude archived; got %+v", idsOf(items))
+	}
+
+	// IncludeArchived widens to both.
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, IncludeArchived: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Errorf("include-archived should return both; got %v", idsOf(items))
+	}
+
+	// OnlyArchived narrows to just archived.
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, OnlyArchived: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "01A" {
+		t.Errorf("only-archived should return just 01A; got %v", idsOf(items))
+	}
+
+	// Unarchive restores it.
+	if err := s.SetArchived(ctx, "01A", false); err != nil {
+		t.Fatal(err)
+	}
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Errorf("after unarchive both should be visible; got %v", idsOf(items))
+	}
+
+	// Missing ID errors out.
+	if err := s.SetArchived(ctx, "nonexistent-id", true); err == nil {
+		t.Errorf("expected error for unknown id")
+	}
+}
+
+func TestSavedSearchLiveRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.SaveSearch(ctx, "static-one", "foo", model.ItemFilter{Type: model.TypeURL}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSearch(ctx, "smart-one", "bar", model.ItemFilter{Tags: []string{"work"}}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListSavedSearches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2, got %d", len(got))
+	}
+	byName := map[string]model.SavedSearch{}
+	for _, ss := range got {
+		byName[ss.Name] = ss
+	}
+	if byName["static-one"].Live {
+		t.Errorf("static-one should not be live")
+	}
+	if !byName["smart-one"].Live {
+		t.Errorf("smart-one should be live")
+	}
+
+	// Round-trip via GetSavedSearch.
+	smart, err := s.GetSavedSearch(ctx, "smart-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !smart.Live {
+		t.Errorf("smart-one round-trip lost live=true")
+	}
+
+	// Re-saving the same name updates the live flag.
+	if err := s.SaveSearch(ctx, "smart-one", "bar", model.ItemFilter{}, false); err != nil {
+		t.Fatal(err)
+	}
+	smart, err = s.GetSavedSearch(ctx, "smart-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if smart.Live {
+		t.Errorf("re-save should have flipped live to false")
+	}
+}
+
+func TestListItemsExcludeTags(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		id   string
+		tags []string
+	}{
+		{"01A", []string{"alpha"}},
+		{"01B", []string{"alpha", "beta"}},
+		{"01C", []string{"gamma"}},
+		{"01D", nil},
+	}
+	for _, c := range cases {
+		item := testItem(c.id, model.TypeURL)
+		for _, t := range c.tags {
+			item.Tags = append(item.Tags, model.Tag{Name: t})
+		}
+		if err := s.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Exclude beta — keeps 01A, 01C, 01D.
+	items, err := s.ListItems(ctx, model.ItemFilter{
+		Limit:       100,
+		ExcludeTags: []string{"beta"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := idsOf(items)
+	wantSet := map[string]bool{"01A": true, "01C": true, "01D": true}
+	if len(got) != 3 {
+		t.Fatalf("got %v, want 3 ids", got)
+	}
+	for _, id := range got {
+		if !wantSet[id] {
+			t.Errorf("unexpected id %q", id)
+		}
+	}
+
+	// Compose include + exclude: tag alpha AND NOT beta → just 01A.
+	items, err = s.ListItems(ctx, model.ItemFilter{
+		Limit:       100,
+		Tags:        []string{"alpha"},
+		ExcludeTags: []string{"beta"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01A" {
+		t.Errorf("compose include+exclude got %v, want [01A]", got)
+	}
+}
+
+func TestListItemsUntagged(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	tagged := testItem("01A", model.TypeURL)
+	tagged.Tags = []model.Tag{{Name: "alpha"}}
+	if err := s.CreateItem(ctx, tagged); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateItem(ctx, testItem("01B", model.TypeURL)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateItem(ctx, testItem("01C", model.TypeURL)); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 100, Untagged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := idsOf(items)
+	if len(got) != 2 {
+		t.Fatalf("untagged got %v, want 2", got)
+	}
+	for _, id := range got {
+		if id == "01A" {
+			t.Errorf("tagged item 01A should be excluded")
+		}
+	}
+
+	// Untagged short-circuits include-tags.
+	items, err = s.ListItems(ctx, model.ItemFilter{
+		Limit:    100,
+		Untagged: true,
+		Tags:     []string{"alpha"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 2 {
+		t.Errorf("untagged should ignore include-tags; got %v", got)
+	}
+}
+
+func TestListItemsRecent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := testItem("01A", model.TypeURL)
+	old.CreatedAt = now.Add(-30 * 24 * time.Hour)
+	if err := s.CreateItem(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	recent := testItem("01B", model.TypeURL)
+	recent.CreatedAt = now.Add(-1 * time.Hour)
+	if err := s.CreateItem(ctx, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	// "7d" should match the 1-hour-old item but exclude the 30-day-old one.
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 100, Recent: "7d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01B" {
+		t.Errorf("recent=7d got %v, want [01B]", got)
+	}
+
+	// "1w" matches the same window via the week shorthand.
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, Recent: "1w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01B" {
+		t.Errorf("recent=1w got %v, want [01B]", got)
+	}
+
+	// Unparseable specs are ignored, not errored.
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, Recent: "garbage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Errorf("unparseable recent should be ignored; got %d", len(items))
+	}
+}
+
+func TestListItemsRegex(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	mk := func(id, title, url string) *model.Item {
+		it := testItem(id, model.TypeURL)
+		it.Title = title
+		it.URL = url
+		return it
+	}
+	for _, it := range []*model.Item{
+		mk("01A", "Go regex tutorial", "https://golang.org/pkg/regexp/"),
+		mk("01B", "Python regex tutorial", "https://docs.python.org/3/library/re.html"),
+		mk("01C", "Knitting basics", "https://example.com/knit"),
+	} {
+		if err := s.CreateItem(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Anchor: titles starting with "Go".
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 100, Regex: "^Go "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01A" {
+		t.Errorf("regex `^Go ` got %v, want [01A]", got)
+	}
+
+	// Negation: not containing "regex" anywhere → just 01C.
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, Regex: "!regex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01C" {
+		t.Errorf("regex `!regex` got %v, want [01C]", got)
+	}
+
+	// Compose with another filter (URL pattern + tag would shrink further;
+	// here just verify regex is matched against URL too).
+	items, err = s.ListItems(ctx, model.ItemFilter{
+		Limit: 100,
+		Regex: `python\.org`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 1 || got[0] != "01B" {
+		t.Errorf("regex against url got %v, want [01B]", got)
+	}
+
+	// Invalid regex is treated as no-op (returns all 3 instead of an error).
+	items, err = s.ListItems(ctx, model.ItemFilter{Limit: 100, Regex: "[unterminated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Errorf("invalid regex should be a no-op; got %d", len(items))
+	}
+}
+
+func idsOf(items []model.Item) []string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
 func TestTags(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

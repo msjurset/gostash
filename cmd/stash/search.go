@@ -51,23 +51,53 @@ var searchDeleteCmd = &cobra.Command{
 	RunE:  runSearchDelete,
 }
 
+var searchRenameCmd = &cobra.Command{
+	Use:   "rename <old> <new>",
+	Short: "Rename a saved search",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		if err := s.RenameSavedSearch(context.Background(), args[0], args[1]); err != nil {
+			return err
+		}
+		if flagJSON {
+			printJSON(map[string]string{"old": args[0], "new": args[1]})
+		} else {
+			fmt.Printf("Renamed saved search %q → %q\n", args[0], args[1])
+		}
+		return nil
+	},
+}
+
 func init() {
 	addSearchFilterFlags(searchCmd)
 	addSearchFilterFlags(searchSaveCmd)
+	searchSaveCmd.Flags().Bool("live", false, "Save as a Smart Collection (auto-refreshes in stash-mac sidebar)")
 	searchCmd.AddCommand(searchSaveCmd)
 	searchCmd.AddCommand(searchListCmd)
 	searchCmd.AddCommand(searchRunCmd)
 	searchCmd.AddCommand(searchDeleteCmd)
+	searchCmd.AddCommand(searchRenameCmd)
 	rootCmd.AddCommand(searchCmd)
 }
 
 func addSearchFilterFlags(cmd *cobra.Command) {
 	cmd.Flags().String("type", "", "Filter by type (url, snippet, file, image)")
 	cmd.Flags().StringSlice("tag", nil, "Filter by tag (repeatable)")
+	cmd.Flags().StringSlice("exclude-tag", nil, "Exclude items carrying any of these tags (repeatable)")
+	cmd.Flags().Bool("untagged", false, "Only items with no tags")
 	cmd.Flags().String("collection", "", "Filter by collection")
 	cmd.Flags().String("after", "", "Created after (YYYY-MM-DD)")
 	cmd.Flags().String("before", "", "Created before (YYYY-MM-DD)")
+	cmd.Flags().String("recent", "", "Only items captured within this duration (e.g. 7d, 2w, 6h). Resolved at query time.")
+	cmd.Flags().String("regex", "", "RE2 pattern matched against title+notes+url+extracted text. Prefix with `!` to negate (e.g. `!^http://`).")
 	cmd.Flags().IntP("limit", "l", 50, "Max results")
+	cmd.Flags().Bool("include-archived", false, "Also show archived items")
+	cmd.Flags().Bool("archived", false, "Show only archived items (overrides --include-archived)")
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
@@ -110,14 +140,19 @@ func runSearchSave(cmd *cobra.Command, args []string) error {
 	}
 	filter.Query = "" // stored separately
 
-	if err := s.SaveSearch(context.Background(), name, query, filter); err != nil {
+	live, _ := cmd.Flags().GetBool("live")
+	if err := s.SaveSearch(context.Background(), name, query, filter, live); err != nil {
 		return err
 	}
 
 	if flagJSON {
-		printJSON(map[string]string{"saved": name})
+		printJSON(map[string]any{"saved": name, "live": live})
 	} else {
-		fmt.Printf("Saved search %q\n", name)
+		kind := "search"
+		if live {
+			kind = "smart collection"
+		}
+		fmt.Printf("Saved %s %q\n", kind, name)
 	}
 	return nil
 }
@@ -160,7 +195,11 @@ func runSearchList(cmd *cobra.Command, args []string) error {
 		if ss.Filter.Collection != "" {
 			desc += " col:" + ss.Filter.Collection
 		}
-		fmt.Printf("  %-20s %s\n", ss.Name, desc)
+		marker := " "
+		if ss.Live {
+			marker = "*"
+		}
+		fmt.Printf("%s %-20s %s\n", marker, ss.Name, desc)
 	}
 	return nil
 }
@@ -243,6 +282,26 @@ func buildFilter(cmd *cobra.Command, query string) (model.ItemFilter, error) {
 		}
 		f.Before = &t
 	}
+	if v, _ := cmd.Flags().GetStringSlice("exclude-tag"); len(v) > 0 {
+		f.ExcludeTags = v
+	}
+	if v, _ := cmd.Flags().GetBool("untagged"); v {
+		f.Untagged = true
+	}
+	if v, _ := cmd.Flags().GetString("recent"); v != "" {
+		f.Recent = v
+	}
+	if v, _ := cmd.Flags().GetString("regex"); v != "" {
+		f.Regex = v
+	}
 	f.Limit, _ = cmd.Flags().GetInt("limit")
+	// `--archived` (only) wins over `--include-archived` (both). Both
+	// flags are advisory — when neither is set, the default filter
+	// excludes archived items so they stay out of casual browsing.
+	if v, _ := cmd.Flags().GetBool("archived"); v {
+		f.OnlyArchived = true
+	} else if v, _ := cmd.Flags().GetBool("include-archived"); v {
+		f.IncludeArchived = true
+	}
 	return f, nil
 }

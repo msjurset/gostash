@@ -49,6 +49,7 @@ type Item struct {
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	Archived      bool            `json:"archived,omitempty"`
 	Tags          []Tag           `json:"tags,omitempty"`
 	Collections   []Collection    `json:"collections,omitempty"`
 	Links         []Link          `json:"links,omitempty"`
@@ -132,11 +133,15 @@ type DupeGroup struct {
 }
 
 // SavedSearch is a named, reusable search query with filter parameters.
+// `Live` flips its sidebar treatment in stash-mac: live entries render as
+// Smart Collections that auto-refresh on `.stashDidIngest`; non-live
+// entries are click-to-run snapshots like the original behavior.
 type SavedSearch struct {
 	ID     int64      `json:"id"`
 	Name   string     `json:"name"`
 	Query  string     `json:"query"`
 	Filter ItemFilter `json:"filter"`
+	Live   bool       `json:"live,omitempty"`
 }
 
 // DupeResult groups items that are potential duplicates.
@@ -158,6 +163,33 @@ type ItemFilter struct {
 	Before     *time.Time `json:"before,omitempty"`
 	Limit      int        `json:"limit,omitempty"`
 	Offset     int        `json:"offset,omitempty"`
+	// IncludeArchived widens the result to include archived items in
+	// addition to the unarchived default. OnlyArchived narrows it to
+	// just archived items. They're mutually exclusive — set at most one.
+	IncludeArchived bool `json:"include_archived,omitempty"`
+	OnlyArchived    bool `json:"only_archived,omitempty"`
+	// ExcludeTags narrows the result to items NOT tagged with any of
+	// these names. Composes with Tags (e.g. tag=ai + exclude=read)
+	// for "AI articles I've read". Lower-cased server-side.
+	ExcludeTags []string `json:"exclude_tags,omitempty"`
+	// Untagged narrows to items with zero tag associations. Mutually
+	// exclusive with Tags / ExcludeTags semantically — when true,
+	// those are ignored. Useful for "captures that fell through every
+	// rule".
+	Untagged bool `json:"untagged,omitempty"`
+	// Recent is a relative time window resolved at query time
+	// (e.g. "7d", "2w", "1h"). Smart Collections store this as the
+	// raw spec so each query reads the *current* "X ago"; freezing
+	// it to an absolute date would defeat the purpose.
+	Recent string `json:"recent,omitempty"`
+	// Regex is an RE2 pattern matched against each item's title +
+	// notes + URL + extracted text. Supports anchors (`^`, `$`) and
+	// the usual regex syntax. A leading `!` negates the match — e.g.
+	// `!^http://` means "URL doesn't start with http". Applied
+	// post-SQL in Go so it composes with all other filters; not
+	// indexed, so very large libraries should pair this with another
+	// filter that narrows first.
+	Regex string `json:"regex,omitempty"`
 }
 
 // Language returns the detected language from the item's metadata, or empty string.

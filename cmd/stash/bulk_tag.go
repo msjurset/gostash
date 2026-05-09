@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/msjurset/gostash/internal/audit"
 	"github.com/spf13/cobra"
 )
 
@@ -48,13 +49,17 @@ func runBulkTag(cmd *cobra.Command, args []string) error {
 			if err := s.AddTag(ctx, item.ID, t); err != nil {
 				errs = append(errs, fmt.Errorf("[%s] add tag %q: %w", shortID(item.ID), t, err))
 				failed = true
+				continue
 			}
+			logTagAudit(&item, audit.ActionAdd, t, "bulk")
 		}
 		for _, t := range rmTags {
 			if err := s.RemoveTag(ctx, item.ID, t); err != nil {
 				errs = append(errs, fmt.Errorf("[%s] remove tag %q: %w", shortID(item.ID), t, err))
 				failed = true
+				continue
 			}
+			logTagAudit(&item, audit.ActionRemove, t, "bulk")
 		}
 		if !failed {
 			ok++

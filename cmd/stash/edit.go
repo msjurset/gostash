@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/msjurset/gostash/internal/audit"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,7 @@ func init() {
 	editCmd.Flags().StringP("title", "t", "", "New title")
 	editCmd.Flags().StringP("note", "n", "", "New note")
 	editCmd.Flags().StringP("extracted-text", "e", "", "Set extracted text")
+	editCmd.Flags().StringP("url", "u", "", "New URL (for link items — fix dead links by pointing them at the new address)")
 	editCmd.Flags().StringSlice("add-tag", nil, "Add tags (repeatable)")
 	editCmd.Flags().StringSlice("remove-tag", nil, "Remove tags (repeatable)")
 	editCmd.Flags().StringP("collection", "c", "", "Add to collection")
@@ -48,6 +50,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("extracted-text") {
 		item.ExtractedText, _ = cmd.Flags().GetString("extracted-text")
 	}
+	if cmd.Flags().Changed("url") {
+		item.URL, _ = cmd.Flags().GetString("url")
+	}
 
 	if err := s.UpdateItem(ctx, item); err != nil {
 		return err
@@ -59,6 +64,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			if err := s.AddTag(ctx, id, t); err != nil {
 				return fmt.Errorf("add tag %q: %w", t, err)
 			}
+			logTagAudit(item, audit.ActionAdd, t, "edit")
 		}
 	}
 
@@ -68,6 +74,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			if err := s.RemoveTag(ctx, id, t); err != nil {
 				return fmt.Errorf("remove tag %q: %w", t, err)
 			}
+			logTagAudit(item, audit.ActionRemove, t, "edit")
 		}
 	}
 

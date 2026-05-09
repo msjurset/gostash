@@ -22,6 +22,12 @@ var rootCmd = &cobra.Command{
 	Long:    "Capture, organize, and search anything — URLs, text snippets, files, images.",
 	Version: version,
 	RunE:    runTUI,
+	// Don't dump the cobra Usage block when a RunE returns an error.
+	// In CLI usage cobra's default usage-on-error is helpful, but
+	// stash-mac surfaces stderr as a user-facing alert and the
+	// usage spam (Flags:/Global Flags:/etc.) hijacks the message.
+	// Errors are still printed; we just suppress the help dump.
+	SilenceUsage: true,
 }
 
 func init() {

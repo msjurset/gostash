@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,6 +44,7 @@ func init() {
 	checkCmd.Flags().Bool("files", false, "Check for orphaned/missing files")
 	checkCmd.Flags().Bool("dupes", false, "Check for duplicate content hashes")
 	checkCmd.Flags().Bool("stream", false, "Emit NDJSON events progressively as issues are discovered")
+	checkCmd.Flags().String("id", "", "Limit URL re-check to a single item id (used after editing a broken URL — fast verify rather than re-fetching the whole library)")
 	rootCmd.AddCommand(checkCmd)
 }
 
@@ -149,7 +152,17 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	files, _ := cmd.Flags().GetBool("files")
 	dupes, _ := cmd.Flags().GetBool("dupes")
 	stream, _ := cmd.Flags().GetBool("stream")
+	idFilter, _ := cmd.Flags().GetString("id")
 	all := !urls && !files && !dupes
+	// `--id` scopes only the URL check (the file/dupe scans are
+	// library-wide by nature); silently skip the others when it's
+	// set so the user gets a focused result rather than a full sweep.
+	if idFilter != "" {
+		all = false
+		urls = true
+		files = false
+		dupes = false
+	}
 
 	// Stream mode implies JSON output; suppress any human-readable text so
 	// stdout is a pure NDJSON stream that consumers can parse line-by-line.
@@ -169,7 +182,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	if all || urls {
-		if err := checkURLs(ctx, s, emit); err != nil {
+		if err := checkURLs(ctx, s, emit, idFilter); err != nil {
 			return fmt.Errorf("url check: %w", err)
 		}
 	}
@@ -233,6 +246,11 @@ func runCheck(cmd *cobra.Command, args []string) error {
 }
 
 // checkFiles finds orphaned files on disk and items referencing missing files.
+// Both content-addressable blobs (`<hash[:2]>/<hash>`) and per-item
+// thumbnails (`thumbnails/<id>.<ext>`) are tracked. Walking by
+// relative path lets a single set distinguish referenced vs. orphan
+// without per-subdir special-casing — thumbnails get the same orphan
+// treatment as content blobs (deleted item → orphan thumbnail).
 func checkFiles(ctx context.Context, s interface {
 	ListItems(context.Context, model.ItemFilter) ([]model.Item, error)
 }, emit *emitter) error {
@@ -240,16 +258,20 @@ func checkFiles(ctx context.Context, s interface {
 
 	filesDir := config.FilesDir()
 
-	diskHashes := map[string]string{} // hash -> path
+	diskFiles := map[string]string{} // rel path -> abs path
 	filepath.Walk(filesDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
 		name := info.Name()
-		if strings.HasPrefix(name, ".tmp-") {
+		if strings.HasPrefix(name, ".tmp-") || name == ".DS_Store" {
 			return nil
 		}
-		diskHashes[name] = path
+		rel, relErr := filepath.Rel(filesDir, path)
+		if relErr != nil {
+			return nil
+		}
+		diskFiles[rel] = path
 		return nil
 	})
 
@@ -258,25 +280,26 @@ func checkFiles(ctx context.Context, s interface {
 		return err
 	}
 
-	dbHashes := map[string]bool{}
+	referenced := map[string]bool{}
 	for _, item := range items {
-		if item.ContentHash == "" {
-			continue
+		if item.ContentHash != "" && len(item.ContentHash) >= 2 {
+			ref := filepath.Join(item.ContentHash[:2], item.ContentHash)
+			referenced[ref] = true
+			if _, ok := diskFiles[ref]; !ok {
+				emit.missingFile(model.CheckIssue{
+					ID:     item.ID,
+					Title:  item.Title,
+					Detail: "content_hash " + item.ContentHash[:16] + "… not found on disk",
+				})
+			}
 		}
-		dbHashes[item.ContentHash] = true
-
-		if _, ok := diskHashes[item.ContentHash]; !ok {
-			emit.missingFile(model.CheckIssue{
-				ID:     item.ID,
-				Title:  item.Title,
-				Detail: "content_hash " + item.ContentHash[:16] + "… not found on disk",
-			})
+		if item.ThumbnailPath != "" {
+			referenced[item.ThumbnailPath] = true
 		}
 	}
 
-	for hash, path := range diskHashes {
-		if !dbHashes[hash] {
-			rel, _ := filepath.Rel(filesDir, path)
+	for rel := range diskFiles {
+		if !referenced[rel] {
 			emit.orphanedFile(rel)
 		}
 	}
@@ -317,9 +340,13 @@ func checkDuplicates(ctx context.Context, s interface {
 // checkURLs does a HEAD request on URL-type items to find broken links.
 // Requests run on a worker pool so a slow or failing URL does not block the
 // rest; each broken URL is emitted independently as soon as it is detected.
+//
+// `idFilter` (optional) scopes the check to a single item — used by the
+// stash-mac UI to verify a freshly-edited URL without re-fetching every
+// URL in the library.
 func checkURLs(ctx context.Context, s interface {
 	ListItems(context.Context, model.ItemFilter) ([]model.Item, error)
-}, emit *emitter) error {
+}, emit *emitter, idFilter string) error {
 	items, err := s.ListItems(ctx, model.ItemFilter{Type: model.TypeURL, Limit: 100000})
 	if err != nil {
 		return err
@@ -330,6 +357,9 @@ func checkURLs(ctx context.Context, s interface {
 	}
 	urls := make([]urlItem, 0, len(items))
 	for _, item := range items {
+		if idFilter != "" && item.ID != idFilter {
+			continue
+		}
 		if item.URL != "" {
 			urls = append(urls, urlItem{id: item.ID, title: item.Title, url: item.URL})
 		}
@@ -396,6 +426,24 @@ func checkURLs(ctx context.Context, s interface {
 	return nil
 }
 
+// isDNSError reports whether err is (or wraps) a DNS resolution failure.
+// net/http wraps DNS failures in *url.Error → *net.OpError → *net.DNSError;
+// errors.As walks the chain. The string fallback covers stdlib-internal
+// wrappers that don't surface a typed DNSError on every platform.
+func isDNSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "no such host") ||
+		strings.Contains(s, "server misbehaving") ||
+		strings.Contains(s, "Temporary failure in name resolution")
+}
+
 // probeURL returns an empty string if the URL appears healthy, or a short
 // failure detail when it is genuinely broken. HEAD is tried first, with a GET
 // fallback for sites that refuse HEAD. Statuses that typically indicate
@@ -416,19 +464,49 @@ func probeURL(client *http.Client, rawURL string) string {
 //   - (true, "")       URL is reachable and returned a non-error status
 //   - (false, detail)  URL is clearly broken (network failure, 404/410, real 5xx)
 //   - (false, "")      Response is inconclusive (auth required, bot-detection,
-//     rate limit, legal block, transient unavailability) —
-//     we don't flag these as broken.
+//     rate limit, legal block, transient unavailability,
+//     or persistent DNS failure) — we don't flag these.
+//
+// DNS failures (no such host) are retried with backoff and ultimately
+// treated as inconclusive rather than broken: a dead resolver or
+// Pi-hole flush takes out hundreds of URLs at once and false positives
+// here are noisier than missing one truly-dead URL for a cycle.
 func tryRequest(client *http.Client, method, rawURL string) (bool, string) {
-	req, err := http.NewRequest(method, rawURL, nil)
-	if err != nil {
-		return false, err.Error()
+	makeReq := func() (*http.Request, error) {
+		req, err := http.NewRequest(method, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", urlCheckUserAgent)
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		return req, nil
 	}
-	req.Header.Set("User-Agent", urlCheckUserAgent)
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err.Error()
+
+	var resp *http.Response
+	var doErr error
+	backoffs := []time.Duration{0, 500 * time.Millisecond, 2 * time.Second}
+	for _, d := range backoffs {
+		if d > 0 {
+			time.Sleep(d)
+		}
+		req, err := makeReq()
+		if err != nil {
+			return false, err.Error()
+		}
+		resp, doErr = client.Do(req)
+		if doErr == nil {
+			break
+		}
+		if !isDNSError(doErr) {
+			break
+		}
+	}
+	if doErr != nil {
+		if isDNSError(doErr) {
+			return false, ""
+		}
+		return false, doErr.Error()
 	}
 	defer resp.Body.Close()
 

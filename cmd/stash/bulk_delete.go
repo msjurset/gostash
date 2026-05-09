@@ -56,6 +56,9 @@ func runBulkDelete(cmd *cobra.Command, args []string) error {
 		if item.ContentHash != "" {
 			fs.Delete(item.ContentHash)
 		}
+		if item.ThumbnailPath != "" {
+			fs.RemoveRelative(item.ThumbnailPath)
+		}
 		if err := s.DeleteItem(ctx, item.ID); err != nil {
 			errs = append(errs, fmt.Errorf("[%s] %w", shortID(item.ID), err))
 			continue

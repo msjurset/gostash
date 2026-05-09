@@ -230,6 +230,14 @@ func FormatEffects(result Result) []string {
 			out = append(out, "link:"+l.ID[:n])
 		}
 	}
+	if t := result.Thumbnail; t != nil {
+		switch {
+		case t.From != "":
+			out = append(out, "thumb:"+truncate(t.From, 50))
+		case t.Auto:
+			out = append(out, "thumb:auto")
+		}
+	}
 	return out
 }
 

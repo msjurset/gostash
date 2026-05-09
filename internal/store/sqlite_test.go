@@ -261,6 +261,39 @@ func TestArchiveItem(t *testing.T) {
 	}
 }
 
+func TestThumbnailPathRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	item := testItem("01THUMB", model.TypeFile)
+	item.ThumbnailPath = "thumbnails/01THUMB.jpg"
+	if err := s.CreateItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := s.GetItem(ctx, "01THUMB")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ThumbnailPath != "thumbnails/01THUMB.jpg" {
+		t.Errorf("thumbnail_path round-trip: got %q, want %q",
+			got.ThumbnailPath, "thumbnails/01THUMB.jpg")
+	}
+
+	got.ThumbnailPath = "thumbnails/01THUMB.png"
+	if err := s.UpdateItem(ctx, got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got2, err := s.GetItem(ctx, "01THUMB")
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got2.ThumbnailPath != "thumbnails/01THUMB.png" {
+		t.Errorf("after update: got %q, want %q",
+			got2.ThumbnailPath, "thumbnails/01THUMB.png")
+	}
+}
+
 func TestSavedSearchLiveRoundTrip(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

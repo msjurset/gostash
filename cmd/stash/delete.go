@@ -48,10 +48,15 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Delete stored file if present
-	if item.ContentHash != "" {
+	// Delete stored file + thumbnail if present
+	if item.ContentHash != "" || item.ThumbnailPath != "" {
 		fs := openFileStore()
-		fs.Delete(item.ContentHash)
+		if item.ContentHash != "" {
+			fs.Delete(item.ContentHash)
+		}
+		if item.ThumbnailPath != "" {
+			fs.RemoveRelative(item.ThumbnailPath)
+		}
 	}
 
 	if err := s.DeleteItem(ctx, id); err != nil {

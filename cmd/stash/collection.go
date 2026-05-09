@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/msjurset/gostash/internal/model"
 
@@ -118,11 +120,87 @@ var colShowCmd = &cobra.Command{
 	},
 }
 
+var colReorderCmd = &cobra.Command{
+	Use:   "reorder <name> <id>...",
+	Short: "Set the curated order of items within a collection",
+	Long: `Reorder items inside a collection. Each id is positioned in the
+order it appears in the argument list (first id → position 0).
+Items not listed retain their existing positions.
+
+Use stdin (one id per line) when the list is too long for argv:
+
+  stash collection reorder mark-favs - <<EOF
+  01ABC...
+  01DEF...
+  01GHI...
+  EOF
+
+The Mac app calls this on drag-to-reorder inside the masonry /
+list view; rules can also call it programmatically.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runReorderCollection,
+}
+
+func runReorderCollection(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	var ids []string
+	if len(args) > 1 {
+		// Stdin sentinel: `-` means read ids from stdin.
+		if len(args) == 2 && args[1] == "-" {
+			ids = readIDLines(cmd)
+		} else {
+			ids = args[1:]
+		}
+	} else {
+		ids = readIDLines(cmd)
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("no ids supplied")
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	if err := s.ReorderCollection(context.Background(), name, ids); err != nil {
+		return err
+	}
+
+	if flagJSON {
+		printJSON(map[string]any{
+			"collection": name,
+			"reordered":  len(ids),
+		})
+	} else {
+		fmt.Printf("Reordered %d items in collection %q\n", len(ids), name)
+	}
+	return nil
+}
+
+// readIDLines reads ids from stdin, one per line. Empty lines and
+// surrounding whitespace are stripped. Used by `stash collection
+// reorder` when the list exceeds argv-friendly size.
+func readIDLines(cmd *cobra.Command) []string {
+	var out []string
+	scanner := bufio.NewScanner(cmd.InOrStdin())
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 func init() {
 	colCreateCmd.Flags().StringP("description", "d", "", "Collection description")
 	collectionCmd.AddCommand(colListCmd)
 	collectionCmd.AddCommand(colCreateCmd)
 	collectionCmd.AddCommand(colDeleteCmd)
 	collectionCmd.AddCommand(colShowCmd)
+	collectionCmd.AddCommand(colReorderCmd)
 	rootCmd.AddCommand(collectionCmd)
 }

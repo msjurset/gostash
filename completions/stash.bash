@@ -2,7 +2,7 @@ _stash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="add search find list show edit delete archive unarchive open copy log shell-init link unlink import bulk stats check dupes backup restore refresh chrome-host rules tag collection ui man help"
+    local commands="add search find list show edit delete archive unarchive open copy log tag-log shell-init link unlink import bulk stats check dupes backup restore refresh chrome-host rules tag collection ui man help"
     local global_flags="--help --version --json --db"
 
     if [[ $cword -eq 1 ]]; then
@@ -72,6 +72,13 @@ _stash() {
             COMPREPLY=($(compgen -W "fire skip retro capture error" -- "$cur"))
         fi
         ;;
+    tag-log)
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--action -a --tag -t --since --limit -l --help" -- "$cur"))
+        elif [[ "$prev" == "--action" || "$prev" == "-a" ]]; then
+            COMPREPLY=($(compgen -W "add remove" -- "$cur"))
+        fi
+        ;;
     shell-init)
         if [[ "$cur" == -* ]]; then
             COMPREPLY=($(compgen -W "--shell --help" -- "$cur"))
@@ -81,7 +88,7 @@ _stash() {
         ;;
     edit)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--title -t --note -n --extracted-text -e --add-tag --remove-tag --collection -c --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title -t --note -n --extracted-text -e --url -u --add-tag --remove-tag --collection -c --help" -- "$cur"))
         fi
         ;;
     delete)
@@ -171,7 +178,7 @@ _stash() {
         ;;
     check)
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "--urls --files --dupes --stream --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--urls --files --dupes --stream --id --help" -- "$cur"))
         fi
         ;;
     rules)

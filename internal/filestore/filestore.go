@@ -104,3 +104,33 @@ func (fs *FileStore) Exists(hash string) bool {
 	_, err := os.Stat(fs.Path(hash))
 	return err == nil
 }
+
+// BaseDir returns the file store's base directory. Callers that need
+// to write non-content-addressable artifacts (e.g. per-item
+// thumbnails) live under this root.
+func (fs *FileStore) BaseDir() string {
+	return fs.baseDir
+}
+
+// ResolveRelative returns the absolute filesystem path for a path
+// relative to the base directory. Returns "" when relPath is empty.
+func (fs *FileStore) ResolveRelative(relPath string) string {
+	if relPath == "" {
+		return ""
+	}
+	return filepath.Join(fs.baseDir, relPath)
+}
+
+// RemoveRelative deletes a file at a path relative to the base
+// directory. No-ops on missing files. Used for non-content-addressable
+// artifacts like per-item thumbnails (`thumbnails/<id>.jpg`).
+func (fs *FileStore) RemoveRelative(relPath string) error {
+	if relPath == "" {
+		return nil
+	}
+	p := filepath.Join(fs.baseDir, relPath)
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete %s: %w", relPath, err)
+	}
+	return nil
+}

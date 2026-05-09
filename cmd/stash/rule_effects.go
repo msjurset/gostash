@@ -130,14 +130,38 @@ func EnsureRuleCollections(ctx context.Context, s store.Store, result rules.Resu
 	}
 }
 
-// FirePostSaveRuleEffects runs the link_to and notify actions that need
-// the item's persisted state. Call after a successful CreateItem.
+// FirePostSaveRuleEffects runs the link_to, notify, and set_thumbnail
+// actions that need the item's persisted state. Call after a
+// successful CreateItem.
 func FirePostSaveRuleEffects(ctx context.Context, s store.Store, item *model.Item, result rules.Result) {
 	for _, link := range result.Links {
 		applyLinkAction(ctx, s, item, link)
 	}
 	for _, msg := range result.Notifies {
 		fireNotification(item, msg)
+	}
+	if result.Thumbnail != nil {
+		applyThumbnailAction(s, item, *result.Thumbnail)
+	}
+}
+
+// applyThumbnailAction resolves a `set_thumbnail` rule action against
+// the just-saved item. `from:` is preferred when set; `auto: true`
+// falls back to the item's own URL. URL items inherit the same HTML
+// scrape + candidate-walk + Referer logic as the manual `stash
+// thumbnail import` path. Failure is non-fatal — the user can still
+// set the thumbnail manually later.
+func applyThumbnailAction(s store.Store, item *model.Item, spec rules.ThumbnailSpec) {
+	fromURL := spec.From
+	if fromURL == "" && spec.Auto {
+		fromURL = item.URL
+	}
+	if fromURL == "" {
+		// No source resolved (e.g., `auto` on a snippet) — skip.
+		return
+	}
+	if _, err := importThumbnailForItem(s, item, fromURL); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: rules set_thumbnail: %v\n", err)
 	}
 }
 

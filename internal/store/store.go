@@ -41,6 +41,7 @@ type Store interface {
 	DeleteCollection(ctx context.Context, name string) error
 	AddToCollection(ctx context.Context, itemID, collectionName string) error
 	RemoveFromCollection(ctx context.Context, itemID, collectionName string) error
+	ReorderCollection(ctx context.Context, name string, orderedIDs []string) error
 	ListCollectionItems(ctx context.Context, name string, filter model.ItemFilter) ([]model.Item, error)
 
 	// Duplicate Dismissal

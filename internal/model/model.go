@@ -46,6 +46,7 @@ type Item struct {
 	ExtractedText string          `json:"extracted_text,omitempty"`
 	MimeType      string          `json:"mime_type,omitempty"`
 	FileSize      int64           `json:"file_size,omitempty"`
+	ThumbnailPath string          `json:"thumbnail_path,omitempty"`
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`

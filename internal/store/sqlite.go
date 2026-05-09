@@ -79,8 +79,44 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateSavedSearchLive(); err != nil {
 		return fmt.Errorf("migrate saved_searches.live: %w", err)
 	}
+	if err := s.migrateThumbnailPath(); err != nil {
+		return fmt.Errorf("migrate thumbnail_path: %w", err)
+	}
+	if err := s.migrateItemCollectionsPosition(); err != nil {
+		return fmt.Errorf("migrate item_collections.position: %w", err)
+	}
 
 	return nil
+}
+
+// migrateItemCollectionsPosition adds the position column that backs
+// curated ordering within a collection. Existing rows get back-filled
+// per-collection by item.created_at DESC (newest first → position 0)
+// so behavior pre-and-post-migration looks the same. Idempotent.
+func (s *SQLiteStore) migrateItemCollectionsPosition() error {
+	return s.addColumnIfMissing("item_collections", "position",
+		`ALTER TABLE item_collections ADD COLUMN position INTEGER NOT NULL DEFAULT 0`,
+		`UPDATE item_collections AS ic
+		 SET position = (
+		     SELECT COUNT(*)
+		     FROM item_collections ic2
+		     JOIN items i2 ON i2.id = ic2.item_id
+		     JOIN items i ON i.id = ic.item_id
+		     WHERE ic2.collection_id = ic.collection_id
+		       AND i2.created_at > i.created_at
+		 )`,
+		`CREATE INDEX IF NOT EXISTS idx_item_collections_collection_position
+		    ON item_collections(collection_id, position)`,
+	)
+}
+
+// migrateThumbnailPath adds the items.thumbnail_path column that stores
+// the path of a per-item thumbnail relative to the files dir. Empty
+// string means "no thumbnail". Idempotent — checks pragma_table_info.
+func (s *SQLiteStore) migrateThumbnailPath() error {
+	return s.addColumnIfMissing("items", "thumbnail_path",
+		`ALTER TABLE items ADD COLUMN thumbnail_path TEXT NOT NULL DEFAULT ''`,
+	)
 }
 
 // migrateArchivedColumn adds the items.archived flag for soft-delete
@@ -203,11 +239,12 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO items (id, type, title, url, notes, source_path, store_path,
-			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at,
+			thumbnail_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
-		item.FileSize, meta, item.CreatedAt, item.UpdatedAt,
+		item.FileSize, meta, item.CreatedAt, item.UpdatedAt, item.ThumbnailPath,
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -368,11 +405,12 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
-			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?
+			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
+			thumbnail_path=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
-		meta, item.UpdatedAt, item.ID,
+		meta, item.UpdatedAt, item.ThumbnailPath, item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)
@@ -760,7 +798,7 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
-		&archived,
+		&archived, &item.ThumbnailPath,
 	)
 	if err != nil {
 		return nil, err
@@ -780,7 +818,7 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 			&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
-			&archived,
+			&archived, &item.ThumbnailPath,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
@@ -898,8 +936,11 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 			))
 		}
 	}
-	if filter.Collection != "" {
-		where = append(where, "i.id IN (SELECT ic.item_id FROM item_collections ic JOIN collections c ON c.id = ic.collection_id WHERE c.name = ?)")
+	hasCollection := filter.Collection != ""
+	if hasCollection {
+		// JOIN (rather than IN subquery) so ORDER BY can reference
+		// `ic.position` for curated ordering.
+		where = append(where, "c.name = ?")
 		args = append(args, filter.Collection)
 	}
 	if filter.LinkedTo != "" {
@@ -929,10 +970,20 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 	}
 
 	q := "SELECT i.* FROM items i"
+	if hasCollection {
+		q += " JOIN item_collections ic ON ic.item_id = i.id" +
+			" JOIN collections c ON c.id = ic.collection_id"
+	}
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY i.created_at DESC"
+	// Curated order within a collection (drag-to-reorder semantics);
+	// chronological newest-first everywhere else.
+	if hasCollection {
+		q += " ORDER BY ic.position ASC, i.created_at DESC"
+	} else {
+		q += " ORDER BY i.created_at DESC"
+	}
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -984,12 +1035,60 @@ func (s *SQLiteStore) addToCollectionTx(ctx context.Context, tx *sql.Tx, itemID,
 	if err != nil {
 		return fmt.Errorf("collection not found: %s", collectionName)
 	}
+	// New items go to the end of the collection's curated order.
+	// COALESCE keeps the first item at position 0.
+	var nextPos int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(position), -1) + 1 FROM item_collections WHERE collection_id = ?`,
+		colID,
+	).Scan(&nextPos); err != nil {
+		return fmt.Errorf("query next position: %w", err)
+	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO item_collections (item_id, collection_id) VALUES (?, ?)`, itemID, colID)
+		`INSERT OR IGNORE INTO item_collections (item_id, collection_id, position) VALUES (?, ?, ?)`,
+		itemID, colID, nextPos,
+	)
 	if err != nil {
 		return fmt.Errorf("add to collection: %w", err)
 	}
 	return nil
+}
+
+// ReorderCollection sets explicit positions for every item in
+// `orderedIDs` within the named collection. Items not in the list
+// keep their current positions (unchanged). Caller is responsible
+// for passing the full desired order — partial reorders should
+// pass everything, with unmoved items in their current spots.
+func (s *SQLiteStore) ReorderCollection(ctx context.Context, collectionName string, orderedIDs []string) error {
+	if collectionName == "" {
+		return fmt.Errorf("collection name required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var colID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM collections WHERE name = ?`, collectionName,
+	).Scan(&colID); err != nil {
+		return fmt.Errorf("collection not found: %s", collectionName)
+	}
+
+	for idx, id := range orderedIDs {
+		if id == "" {
+			continue
+		}
+		_, err := tx.ExecContext(ctx,
+			`UPDATE item_collections SET position = ? WHERE collection_id = ? AND item_id = ?`,
+			idx, colID, id,
+		)
+		if err != nil {
+			return fmt.Errorf("reorder %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // sortPair returns IDs in consistent sorted order for dedup lookups.

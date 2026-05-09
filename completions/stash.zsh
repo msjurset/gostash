@@ -15,6 +15,7 @@ _stash() {
         'open:Open a stashed item in its default application'
         'copy:Copy a field of a stashed item to the clipboard'
         'log:Show recent capture activity (rules, captures, errors)'
+        'tag-log:Show recent manual tag activity'
         'shell-init:Print shell function + keybind for stash find integration'
         'tag:Manage tags'
         'collection:Manage collections'
@@ -164,6 +165,15 @@ _stash() {
                 '--dry-run[Print what would be (un)archived without writing]' \
                 '*:item id:'
             ;;
+        check)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '--urls[Check for broken URLs]' \
+                '--files[Check for orphaned/missing files]' \
+                '--dupes[Check for duplicate content hashes]' \
+                '--stream[Emit NDJSON events progressively]' \
+                '--id=[Limit URL recheck to one item id]:item id:'
+            ;;
         copy)
             _arguments \
                 '(- *)--help[Show help]' \
@@ -179,6 +189,14 @@ _stash() {
                 '--limit=[Maximum events to show]:N:' \
                 '-l+[Maximum events to show]:N:' \
                 '(--tail -f)'{--tail,-f}'[Follow the log live]'
+            ;;
+        tag-log)
+            _arguments \
+                '(- *)--help[Show help]' \
+                '(--action -a)'{--action,-a}'=[Filter by action]:action:(add remove)' \
+                '(--tag -t)'{--tag,-t}'=[Filter to events involving the named tag]:name:' \
+                '--since=[Only events newer than DURATION]:duration (e.g. 30m, 1h, 7d, 1w):' \
+                '(--limit -l)'{--limit,-l}'=[Maximum events to show]:N:'
             ;;
         shell-init)
             _arguments \
@@ -214,6 +232,8 @@ _stash() {
                 '--note=[Note]:note:' \
                 '-e+[Extracted text]:text:' \
                 '--extracted-text=[Extracted text]:text:' \
+                '-u+[New URL (link items)]:url:' \
+                '--url=[New URL (link items)]:url:' \
                 '*--add-tag=[Add tag]:tag:' \
                 '*--remove-tag=[Remove tag]:tag:' \
                 '-c+[Collection]:collection:' \

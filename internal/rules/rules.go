@@ -85,14 +85,15 @@ type Context struct {
 //	  - add_tags: [video, watch-later]
 //	  - notify: "New video: {{.Title}}"
 type Action struct {
-	AddTags       []string  `yaml:"add_tags,omitempty" json:"add_tags,omitempty"`
-	AddCollection string    `yaml:"add_collection,omitempty" json:"add_collection,omitempty"`
-	SetTitle      string    `yaml:"set_title,omitempty" json:"set_title,omitempty"`
-	SetNote       string    `yaml:"set_note,omitempty" json:"set_note,omitempty"`
-	AppendNote    string    `yaml:"append_note,omitempty" json:"append_note,omitempty"`
-	Skip          bool      `yaml:"skip,omitempty" json:"skip,omitempty"`
-	Notify        string    `yaml:"notify,omitempty" json:"notify,omitempty"`
-	LinkTo        *LinkSpec `yaml:"link_to,omitempty" json:"link_to,omitempty"`
+	AddTags       []string       `yaml:"add_tags,omitempty" json:"add_tags,omitempty"`
+	AddCollection string         `yaml:"add_collection,omitempty" json:"add_collection,omitempty"`
+	SetTitle      string         `yaml:"set_title,omitempty" json:"set_title,omitempty"`
+	SetNote       string         `yaml:"set_note,omitempty" json:"set_note,omitempty"`
+	AppendNote    string         `yaml:"append_note,omitempty" json:"append_note,omitempty"`
+	Skip          bool           `yaml:"skip,omitempty" json:"skip,omitempty"`
+	Notify        string         `yaml:"notify,omitempty" json:"notify,omitempty"`
+	LinkTo        *LinkSpec      `yaml:"link_to,omitempty" json:"link_to,omitempty"`
+	SetThumbnail  *ThumbnailSpec `yaml:"set_thumbnail,omitempty" json:"set_thumbnail,omitempty"`
 }
 
 // LinkSpec selects link targets. Exactly one of Tag / ID should be set;
@@ -100,6 +101,47 @@ type Action struct {
 type LinkSpec struct {
 	Tag string `yaml:"tag,omitempty" json:"tag,omitempty"`
 	ID  string `yaml:"id,omitempty" json:"id,omitempty"`
+}
+
+// ThumbnailSpec configures the `set_thumbnail` rule action. Two
+// shapes are accepted in YAML:
+//
+//	- set_thumbnail: auto       # use item.url for URL items
+//	- set_thumbnail:
+//	    from: https://example.com/image.jpg
+//
+// `Auto` and `From` are mutually exclusive; if both are set, `From`
+// wins. Persisted via `stash thumbnail import` post-save (see
+// rule_effects.go), so HTML scrape, image download, and CDN-hotlink
+// referer handling all come along for free.
+type ThumbnailSpec struct {
+	Auto bool   `yaml:"-" json:"auto,omitempty"`
+	From string `yaml:"from,omitempty" json:"from,omitempty"`
+}
+
+// UnmarshalYAML accepts either the bare scalar `auto` or a mapping
+// with `from:`. Custom unmarshaling lets users write the terser form
+// for the common case (`set_thumbnail: auto`) without forcing the
+// mapping shape.
+func (t *ThumbnailSpec) UnmarshalYAML(unmarshal func(any) error) error {
+	var s string
+	if err := unmarshal(&s); err == nil {
+		if s == "auto" {
+			t.Auto = true
+			return nil
+		}
+		return fmt.Errorf("set_thumbnail: unknown scalar %q (expected 'auto' or a mapping)", s)
+	}
+	var m struct {
+		Auto bool   `yaml:"auto"`
+		From string `yaml:"from"`
+	}
+	if err := unmarshal(&m); err != nil {
+		return err
+	}
+	t.Auto = m.Auto
+	t.From = m.From
+	return nil
 }
 
 // Rule is a single rule definition. Disabled rules are loaded but not applied.
@@ -188,6 +230,7 @@ type Result struct {
 	SkippedBy    string // name of the rule that requested the skip
 	Notifies     []string
 	Links        []LinkSpec
+	Thumbnail    *ThumbnailSpec // first-match-wins
 	MatchedRules []string
 	Errors       []error
 }
@@ -344,6 +387,17 @@ func (rs *Ruleset) ApplyWithContext(item *model.Item, ctx Context) Result {
 				if res.SkippedBy == "" {
 					res.SkippedBy = rule.Name
 				}
+			}
+			if act.SetThumbnail != nil && res.Thumbnail == nil {
+				spec := *act.SetThumbnail
+				if spec.From != "" {
+					if rendered, terr := renderTemplate(spec.From, td); terr == nil {
+						spec.From = rendered
+					} else {
+						res.Errors = append(res.Errors, fmt.Errorf("rule %q set_thumbnail.from: %w", rule.Name, terr))
+					}
+				}
+				res.Thumbnail = &spec
 			}
 		}
 	}

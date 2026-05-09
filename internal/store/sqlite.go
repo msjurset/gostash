@@ -284,13 +284,31 @@ func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*model.Item, erro
 }
 
 // ListItems returns items matching the filter, ordered by creation time descending.
+//
+// When a regex filter is set, the SQL LIMIT is deferred and applied
+// post-regex. Otherwise, "list 3 items matching /github/" would fetch
+// the 3 newest items and then drop any that didn't match — almost
+// always producing zero results when the user expected "the 3 newest
+// of all matching items."
 func (s *SQLiteStore) ListItems(ctx context.Context, filter model.ItemFilter) ([]model.Item, error) {
+	regex := strings.TrimSpace(filter.Regex)
+	requestedLimit := filter.Limit
+	if regex != "" {
+		filter.Limit = 0
+	}
 	q, args := s.buildListQuery(filter)
 	items, err := s.queryItems(ctx, q, args)
 	if err != nil {
 		return nil, err
 	}
-	return applyRegexFilter(items, filter.Regex)
+	items, err = applyRegexFilter(items, regex)
+	if err != nil {
+		return nil, err
+	}
+	if regex != "" && requestedLimit > 0 && len(items) > requestedLimit {
+		items = items[:requestedLimit]
+	}
+	return items, nil
 }
 
 // SearchItems performs full-text search using FTS5.
@@ -372,11 +390,18 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 
 	q := "SELECT i.* FROM items i WHERE " + strings.Join(where, " AND ") + " ORDER BY i.created_at DESC"
 
+	regex := strings.TrimSpace(filter.Regex)
+	requestedLimit := filter.Limit
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	q += fmt.Sprintf(" LIMIT %d", limit)
+	// Skip the SQL LIMIT when a regex filter is active so post-regex
+	// truncation reflects "top N of all matches" rather than "of the
+	// top N rows, those that match" (which is almost always empty).
+	if regex == "" {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
 	if filter.Offset > 0 {
 		q += fmt.Sprintf(" OFFSET %d", filter.Offset)
 	}
@@ -385,7 +410,20 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 	if err != nil {
 		return nil, err
 	}
-	return applyRegexFilter(items, filter.Regex)
+	items, err = applyRegexFilter(items, regex)
+	if err != nil {
+		return nil, err
+	}
+	if regex != "" {
+		effective := requestedLimit
+		if effective <= 0 {
+			effective = 50
+		}
+		if len(items) > effective {
+			items = items[:effective]
+		}
+	}
+	return items, nil
 }
 
 // UpdateItem updates an existing item.

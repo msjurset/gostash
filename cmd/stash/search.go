@@ -16,11 +16,21 @@ var searchCmd = &cobra.Command{
 	Long: `Full-text search across all stashed items.
 
   stash search golang             # search for "golang"
+  stash search --regex "^https"   # regex-only search (no positional needed)
   stash search save fav-go --type url --tag go    # save a search
   stash search list               # list saved searches
   stash search run fav-go         # run a saved search
   stash search delete fav-go      # delete a saved search`,
-	Args: cobra.MinimumNArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) >= 1 {
+			return nil
+		}
+		// Regex-only invocation skips the positional query.
+		if r, _ := cmd.Flags().GetString("regex"); r != "" {
+			return nil
+		}
+		return fmt.Errorf("requires a query argument or --regex pattern")
+	},
 	RunE: runSearch,
 }
 
@@ -107,7 +117,11 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
-	filter, err := buildFilter(cmd, args[0])
+	query := ""
+	if len(args) > 0 {
+		query = args[0]
+	}
+	filter, err := buildFilter(cmd, query)
 	if err != nil {
 		return err
 	}

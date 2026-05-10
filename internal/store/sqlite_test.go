@@ -550,6 +550,66 @@ func TestListItemsRegex(t *testing.T) {
 	}
 }
 
+// Regression: `stash search --regex pattern -l N` was returning empty
+// because the SQL LIMIT was applied BEFORE the regex filter — the top
+// N newest rows were fetched and most didn't match. Filter must apply
+// to the full candidate set with truncation done post-regex.
+func TestListItemsRegexLimitPostFilter(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// 10 items, only 2 of them ("github" in title) should match. The
+	// matching items are the OLDEST so they'd never appear in the
+	// top-3 by created_at if the limit applied pre-regex.
+	now := time.Now().UTC()
+	mk := func(id, title string, ageMinutes int) *model.Item {
+		it := testItem(id, model.TypeURL)
+		it.Title = title
+		it.URL = "https://example.com/" + id
+		it.CreatedAt = now.Add(time.Duration(-ageMinutes) * time.Minute)
+		it.UpdatedAt = it.CreatedAt
+		return it
+	}
+	rows := []*model.Item{
+		// Newest first by created_at descending — the SQL LIMIT
+		// without our fix would have returned the first 3 of these.
+		mk("01N1", "newest 1", 1),
+		mk("01N2", "newest 2", 2),
+		mk("01N3", "newest 3", 3),
+		mk("01N4", "newest 4", 4),
+		mk("01N5", "newest 5", 5),
+		mk("01N6", "newest 6", 6),
+		mk("01N7", "newest 7", 7),
+		mk("01N8", "newest 8", 8),
+		// Both matches sit at the OLDEST end. Without the fix they
+		// would have been excluded by an early SQL LIMIT 3.
+		mk("01M1", "github older A", 100),
+		mk("01M2", "github older B", 200),
+	}
+	for _, it := range rows {
+		if err := s.CreateItem(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 3, Regex: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(items); len(got) != 2 || !contains(got, "01M1") || !contains(got, "01M2") {
+		t.Errorf("regex+limit got %v, want both matching ids regardless of limit", got)
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func idsOf(items []model.Item) []string {
 	ids := make([]string, len(items))
 	for i, it := range items {

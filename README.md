@@ -5,6 +5,10 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 ## Features
 
 - **Capture anything** — URLs (with automatic title/content extraction), text from stdin, local files, directories (auto-archived as tar.gz), images, `.eml` emails
+- **Fetch files from a URL** — `stash fetch-url` walks a page for image / file links, lets you `--pick` the ones to keep, optionally cross-links them with the source page, and `--archive`s the source as a one-shot snapshot. Same path the Mac picker and Chrome extension drive
+- **Bookmark import** — Native readers for Chrome / Edge / Brave / Arc / Vivaldi / Opera / Chromium (shared JSON format), Firefox (`places.sqlite`), Safari (binary `Bookmarks.plist`, needs Full Disk Access), plus generic Netscape HTML, Pocket export, Pinterest data-download CSV, and Raindrop.io CSV. `--dry-run --json` previews the full tree; `stash import apply` consumes a curated manifest from stdin for the Mac importer's review-then-pick UX
+- **Browser history import** — `stash import history <browser> --since N` reads the local history DB for any of the above browsers, returning recent visits as candidate items with epoch math handled per-browser (Chromium µs since Windows epoch, Firefox µs since Unix, Safari CFAbsoluteTime). Opens read-only / immutable so it's safe to run while the browser is open
+- **Archive export / import** — `stash export` packages items into a zip with a versioned manifest (`--all`, `--tag`, `--collection`, or `-` for stdin IDs); `stash import archive` round-trips them back with a conflict policy
 - **Full-text search** — SQLite FTS5-powered search with partial word matching
 - **Tags & collections** — Organize items with tags and named collections
 - **Item linking** — Create labeled relationships between items

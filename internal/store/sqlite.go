@@ -26,11 +26,17 @@ func NewSQLite(dsn string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	// Enable WAL mode and foreign keys
+	// `busy_timeout` MUST come first. PRAGMAs run sequentially with
+	// no implicit retry; if another `stash` process is mid-write
+	// when we open, the very first statement gets a "database is
+	// locked" error before busy_timeout would have given it 5s to
+	// wait. Setting busy_timeout up front protects everything that
+	// follows — including journal_mode=WAL, which itself takes a
+	// brief exclusive lock to flip the mode.
 	for _, pragma := range []string{
+		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()

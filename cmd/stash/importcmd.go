@@ -57,7 +57,158 @@ func init() {
 	importCmd.AddCommand(importBookmarksCmd)
 	importCmd.AddCommand(importPocketCmd)
 	importCmd.AddCommand(importBackfillCmd)
+	importCmd.AddCommand(importApplyCmd)
 	rootCmd.AddCommand(importCmd)
+}
+
+// import apply — source-agnostic commit step. Reads a manifest of
+// URL items from stdin and writes them to the store with the
+// existing dedup-by-URL semantics. Paired with the `--dry-run --json`
+// preview emitted by chrome/firefox/bookmarks subcommands.
+//
+// The Mac importer uses this to commit a user-curated subset of
+// the preview tree (with possibly-edited per-item tags + a shared
+// collection) in one round-trip.
+var importApplyCmd = &cobra.Command{
+	Use:   "apply",
+	Short: "Commit a manifest of URL items read from stdin",
+	Long: `Read a JSON manifest from stdin and import each entry as a
+URL item, deduping by URL against existing items. Pair with
+` + "`stash import {chrome,firefox,bookmarks,pocket} --dry-run --json`" + ` to
+preview, then submit a curated subset back through apply.
+
+Manifest shape (stdin):
+
+  {
+    "collection": "Imported Bookmarks",   // optional
+    "items": [
+      {
+        "url": "https://example.com",
+        "title": "Example",
+        "tags": ["work", "design"],
+        "created_at": "2024-01-15T10:30:00Z",  // optional
+        "notes": "..."                          // optional
+      }
+    ]
+  }
+
+Output mirrors stash import archive: { imported, skipped, errors }.`,
+	RunE: runImportApply,
+}
+
+func runImportApply(cmd *cobra.Command, args []string) error {
+	type manifestItem struct {
+		URL       string   `json:"url"`
+		Title     string   `json:"title"`
+		Tags      []string `json:"tags,omitempty"`
+		CreatedAt *string  `json:"created_at,omitempty"`
+		Notes     string   `json:"notes,omitempty"`
+	}
+	type manifest struct {
+		Collection string         `json:"collection,omitempty"`
+		Items      []manifestItem `json:"items"`
+	}
+
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read stdin: %w", err)
+	}
+	var m manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	var imported, skipped int
+	var errs []string
+
+	for _, mi := range m.Items {
+		if mi.URL == "" {
+			continue
+		}
+		exists, err := s.ExistsByURL(ctx, mi.URL)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("check %s: %v", mi.URL, err))
+			continue
+		}
+		if exists {
+			skipped++
+			continue
+		}
+
+		now := time.Now().UTC()
+		entropy := ulid.Monotonic(rand.New(rand.NewSource(now.UnixNano())), 0)
+		id := ulid.MustNew(ulid.Timestamp(now), entropy).String()
+
+		created := now
+		if mi.CreatedAt != nil {
+			if t, err := time.Parse(time.RFC3339, *mi.CreatedAt); err == nil {
+				created = t
+			}
+		}
+
+		title := mi.Title
+		if title == "" {
+			title = mi.URL
+		}
+
+		item := &model.Item{
+			ID:        id,
+			Type:      model.TypeURL,
+			Title:     title,
+			URL:       mi.URL,
+			Notes:     mi.Notes,
+			CreatedAt: created,
+			UpdatedAt: now,
+			Metadata:  json.RawMessage("{}"),
+		}
+		tagSet := make(map[string]bool)
+		for _, t := range mi.Tags {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				tagSet[t] = true
+			}
+		}
+		for t := range tagSet {
+			item.Tags = append(item.Tags, model.Tag{Name: t})
+		}
+		if m.Collection != "" {
+			item.Collections = append(item.Collections, model.Collection{Name: m.Collection})
+		}
+		if err := s.CreateItem(ctx, item); err != nil {
+			errs = append(errs, fmt.Sprintf("create %s: %v", mi.URL, err))
+			continue
+		}
+		imported++
+		if !flagJSON {
+			fmt.Printf("  Imported [%s] %s\n", shortID(id), title)
+		}
+	}
+
+	if flagJSON {
+		payload := map[string]any{
+			"imported": imported,
+			"skipped":  skipped,
+			"total":    len(m.Items),
+		}
+		if len(errs) > 0 {
+			payload["errors"] = errs
+		}
+		printJSON(payload)
+	} else {
+		fmt.Printf("\n%d imported, %d skipped, %d errors, %d total\n",
+			imported, skipped, len(errs), len(m.Items))
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+	}
+	return nil
 }
 
 var importBackfillCmd = &cobra.Command{
@@ -121,11 +272,12 @@ func runImportBackfill(cmd *cobra.Command, args []string) error {
 }
 
 type bookmark struct {
-	url       string
-	title     string
-	tags      []string   // derived from folder path + inline tags
-	notes     string
-	createdAt *time.Time // from time_added attribute
+	url        string
+	title      string
+	tags       []string   // derived from folder path + inline tags
+	folderPath []string   // raw folder breadcrumb (outermost → innermost); empty = top-level
+	notes      string
+	createdAt  *time.Time // from time_added attribute
 }
 
 func runImportBookmarks(cmd *cobra.Command, args []string) error {
@@ -242,7 +394,12 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 	}
 
 	var bookmarks []bookmark
-	var folderStack []string
+	// Raw folder names (as they appeared in the HTML) and the
+	// normalized-tag form of each. Kept parallel so we can both
+	// preserve the original breadcrumb for the Mac tree UI and
+	// derive the tag list cheaply.
+	var folderRawStack []string
+	var folderTagStack []string
 
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -251,7 +408,8 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 			case "h3":
 				// Folder heading — push folder name onto stack
 				if text := extractText(n); text != "" {
-					folderStack = append(folderStack, normalizeTag(text))
+					folderRawStack = append(folderRawStack, text)
+					folderTagStack = append(folderTagStack, normalizeTag(text))
 				}
 			case "a":
 				// Bookmark link
@@ -263,7 +421,7 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 					}
 					// Copy current folder stack as tags, skip empty
 					var tags []string
-					for _, t := range folderStack {
+					for _, t := range folderTagStack {
 						if t != "" {
 							tags = append(tags, t)
 						}
@@ -277,10 +435,15 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 							}
 						}
 					}
+					// Preserve the raw folder breadcrumb so the Mac
+					// importer's tree UI can render the original
+					// hierarchy. `tags` is the normalized form.
+					folderCopy := append([]string{}, folderRawStack...)
 					bm := bookmark{
-						url:   href,
-						title: title,
-						tags:  tags,
+						url:        href,
+						title:      title,
+						tags:       tags,
+						folderPath: folderCopy,
 					}
 					// time_added from Pocket exports (unix timestamp)
 					if ts := getAttr(n, "time_added"); ts != "" {
@@ -302,8 +465,9 @@ func parseBookmarksHTML(r io.Reader) ([]bookmark, error) {
 			// Pop folder when leaving a DL (if we pushed one)
 			// The structure is: <DT><H3>Folder</H3><DL>...items...</DL>
 			// When we leave a DL, the folder scope ends
-			if len(folderStack) > 0 {
-				folderStack = folderStack[:len(folderStack)-1]
+			if len(folderRawStack) > 0 {
+				folderRawStack = folderRawStack[:len(folderRawStack)-1]
+				folderTagStack = folderTagStack[:len(folderTagStack)-1]
 			}
 			return
 		}

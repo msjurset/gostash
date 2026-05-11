@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Stash Files from Page</title>
+  <link rel="stylesheet" href="picker.css">
+</head>
+<body>
+  <header>
+    <h1>Stash Files from Page</h1>
+    <div id="page-info" class="page-info"></div>
+  </header>
+
+  <div id="status" class="status"></div>
+
+  <main>
+    <div class="controls">
+      <button id="select-all" type="button">Select All</button>
+      <button id="select-none" type="button">Select None</button>
+      <button id="select-images" type="button">Images Only</button>
+      <span class="spacer"></span>
+      <label class="filter-label">
+        Filter:
+        <input id="filter" type="search" placeholder="title or URL">
+      </label>
+    </div>
+    <ul id="candidates"></ul>
+  </main>
+
+  <footer>
+    <div class="opts">
+      <label>
+        <input id="archive-mode" type="checkbox">
+        Bundle as a single zip archive
+      </label>
+      <label>
+        <input id="link-source" type="checkbox" checked>
+        Link to source page item
+      </label>
+    </div>
+    <div class="actions">
+      <span id="selected-count" class="selected-count">0 selected</span>
+      <button id="cancel" type="button">Cancel</button>
+      <button id="stash" type="button" class="primary" disabled>Stash</button>
+    </div>
+  </footer>
+
+  <script src="picker.js"></script>
+</body>
+</html>

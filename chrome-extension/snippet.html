@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Stash Selected Text</title>
+  <link rel="stylesheet" href="snippet.css">
+</head>
+<body>
+  <header>
+    <h1>Stash Selected Text</h1>
+    <div id="page-info" class="page-info"></div>
+  </header>
+
+  <main>
+    <section class="preview">
+      <div class="preview-label">Selection</div>
+      <blockquote id="selection-text"></blockquote>
+    </section>
+
+    <section class="mode">
+      <label class="mode-radio">
+        <input type="radio" name="mode" value="new" checked>
+        <span>Stash as a new snippet</span>
+      </label>
+      <label class="mode-radio">
+        <input type="radio" name="mode" value="append">
+        <span>Append to an existing item</span>
+      </label>
+    </section>
+
+    <!-- New-snippet fields -->
+    <section id="new-section" class="fields">
+      <div class="field">
+        <label for="new-title">Title</label>
+        <input id="new-title" type="text" placeholder="(default: source page title)">
+      </div>
+      <div class="field">
+        <label for="new-tags">Tags</label>
+        <input id="new-tags" type="text" placeholder="comma-separated">
+      </div>
+      <div class="field">
+        <label for="new-collection">Collection</label>
+        <select id="new-collection">
+          <option value="">None</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Append-to-existing fields -->
+    <section id="append-section" class="fields hidden">
+      <div class="field">
+        <label for="search">Find item</label>
+        <input id="search" type="search" placeholder="Search by title, url, or tag:name" autocomplete="off">
+      </div>
+      <ul id="search-results"></ul>
+      <div id="picked-item" class="picked hidden">
+        <span class="picked-label">Will append to:</span>
+        <span class="picked-title"></span>
+      </div>
+    </section>
+
+    <div id="status" class="status"></div>
+  </main>
+
+  <footer>
+    <span class="hint">⌘W to close</span>
+    <span class="spacer"></span>
+    <button id="cancel" type="button">Cancel</button>
+    <button id="stash" type="button" class="primary">Stash</button>
+  </footer>
+
+  <script src="snippet.js"></script>
+</body>
+</html>

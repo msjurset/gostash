@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/fetch"
 	"github.com/msjurset/gostash/internal/langdetect"
@@ -231,7 +232,13 @@ func addSnippet(item *model.Item, fs interface{ Save(io.Reader) (string, int64, 
 
 func addLink(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, rawURL string) error {
 	item.Type = model.TypeURL
-	item.URL = rawURL
+	// Apply URL-exclusion rules from config.toml. The original URL
+	// is still used for the fetch below; only what's persisted on
+	// the item's URL column gets redacted, so the user can still
+	// see "this came from <domain>" without re-visit-never session
+	// noise in the stored URL.
+	storedURL, _ := config.RedactURL(rawURL)
+	item.URL = storedURL
 
 	result, err := fetch.URL(rawURL)
 	if err != nil {

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/filestore"
 	"github.com/msjurset/gostash/internal/model"
@@ -68,6 +69,7 @@ func init() {
 	fetchURLCmd.Flags().Bool("list", false, "Always list candidates, even when the URL points at a file")
 	fetchURLCmd.Flags().StringSlice("pick", nil, "Download a specific URL (repeatable). Triggers pick mode.")
 	fetchURLCmd.Flags().String("link-source", "", "URL or item id of the source page; new items are linked to it (auto-creates a URL item if needed)")
+	fetchURLCmd.Flags().Bool("clique", false, "Also cross-link every picked item to every other picked item (rim edges) — turns the batch into a clique. Quadratic in the pick count; warns past 15 picks.")
 	fetchURLCmd.Flags().Bool("archive", false, "When picking many URLs, bundle them as a single zip-typed file item")
 	fetchURLCmd.Flags().StringSliceP("tag", "T", nil, "Tags to add to every new item (repeatable)")
 	fetchURLCmd.Flags().StringP("collection", "c", "", "Add every new item to this collection")
@@ -80,13 +82,14 @@ func runFetchURL(cmd *cobra.Command, args []string) error {
 	listOnly, _ := cmd.Flags().GetBool("list")
 	picks, _ := cmd.Flags().GetStringSlice("pick")
 	linkSource, _ := cmd.Flags().GetString("link-source")
+	clique, _ := cmd.Flags().GetBool("clique")
 	asArchive, _ := cmd.Flags().GetBool("archive")
 	tags, _ := cmd.Flags().GetStringSlice("tag")
 	collection, _ := cmd.Flags().GetString("collection")
 	allLinks, _ := cmd.Flags().GetBool("all-links")
 
 	if len(picks) > 0 {
-		return runPickMode(pageURL, picks, linkSource, asArchive, tags, collection)
+		return runPickMode(pageURL, picks, linkSource, clique, asArchive, tags, collection)
 	}
 
 	body, ctype, finalURL, err := fetchURLBytes(pageURL, "")
@@ -145,10 +148,11 @@ type pickedItem struct {
 }
 
 type pickResult struct {
-	Type     string       `json:"type"` // "picked"
-	Imported []pickedItem `json:"imported"`
-	LinkedTo string       `json:"linked_to,omitempty"`
-	Errors   []string     `json:"errors,omitempty"`
+	Type        string       `json:"type"` // "picked"
+	Imported    []pickedItem `json:"imported"`
+	LinkedTo    string       `json:"linked_to,omitempty"`
+	CliqueEdges int          `json:"clique_edges,omitempty"`
+	Errors      []string     `json:"errors,omitempty"`
 }
 
 // MARK: - HTML scraping
@@ -387,9 +391,15 @@ func stashFetchedBytes(
 	collection string,
 	titleHint string,
 ) (*model.Item, error) {
+	// Apply URL-exclusion rules so a Gemini-chat-style transient
+	// source URL doesn't pollute the captured item's URL column.
+	// The original srcURL is still used for the fetch + hashing
+	// upstream of this call; only what we persist on the item is
+	// redacted.
+	redactedSrc, _ := config.RedactURL(srcURL)
 	item := &model.Item{
 		ID:        newFetchID(),
-		URL:       srcURL,
+		URL:       redactedSrc,
 		Metadata:  json.RawMessage("{}"),
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -487,7 +497,7 @@ func extFromMime(mt string) string {
 
 // MARK: - Pick mode
 
-func runPickMode(pageURL string, picks []string, linkSource string, asArchive bool, tags []string, collection string) error {
+func runPickMode(pageURL string, picks []string, linkSource string, clique, asArchive bool, tags []string, collection string) error {
 	s, err := openStore()
 	if err != nil {
 		return err
@@ -546,6 +556,39 @@ func runPickMode(pageURL string, picks []string, linkSource string, asArchive bo
 		result.LinkedTo = linkTargetID
 	}
 
+	// Clique-link mode: create N*(N-1)/2 mutual edges between every
+	// pair of successfully-imported picks, labeled "clique" so they're
+	// distinguishable from the source-spoke "from-page" edges. Skips
+	// silently when there's <2 items to link; warns past 15 picks to
+	// prevent silent fan-out into very large link tables.
+	if clique && len(result.Imported) >= 2 {
+		const cliqueSoftCap = 15
+		if len(result.Imported) > cliqueSoftCap {
+			fmt.Fprintf(os.Stderr,
+				"warning: --clique with %d picks creates %d edges; continuing\n",
+				len(result.Imported),
+				len(result.Imported)*(len(result.Imported)-1)/2,
+			)
+		}
+		edges := 0
+		for i := 0; i < len(result.Imported); i++ {
+			for j := i + 1; j < len(result.Imported); j++ {
+				if err := s.LinkItems(ctx,
+					result.Imported[i].ID, result.Imported[j].ID,
+					"clique", false,
+				); err != nil {
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("clique link %s↔%s: %v",
+							shortID(result.Imported[i].ID),
+							shortID(result.Imported[j].ID), err))
+					continue
+				}
+				edges++
+			}
+		}
+		result.CliqueEdges = edges
+	}
+
 	if flagJSON {
 		printJSON(result)
 		return nil
@@ -555,6 +598,9 @@ func runPickMode(pageURL string, picks []string, linkSource string, asArchive bo
 	}
 	if linkTargetID != "" {
 		fmt.Printf("Linked all to source item %s\n", shortID(linkTargetID))
+	}
+	if result.CliqueEdges > 0 {
+		fmt.Printf("Cross-linked picks: %d clique edges\n", result.CliqueEdges)
 	}
 	if len(result.Errors) > 0 {
 		fmt.Printf("\n%d errors:\n", len(result.Errors))
@@ -651,11 +697,15 @@ func stashAsArchive(s store.Store, fs *filestore.FileStore, pageURL string, pick
 	}
 
 	title := fmt.Sprintf("Files from %s", basenameFromURL(pageURL))
+	// Archive's URL gets the same redaction treatment as picked
+	// items — the page URL is the capture provenance, and for
+	// session-only pages it's worth dropping the noise.
+	redactedPage, _ := config.RedactURL(pageURL)
 	item := &model.Item{
 		ID:          newFetchID(),
 		Type:        model.TypeFile,
 		Title:       title,
-		URL:         pageURL,
+		URL:         redactedPage,
 		MimeType:    "application/zip",
 		ContentHash: hash,
 		FileSize:    size,

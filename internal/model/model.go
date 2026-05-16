@@ -145,6 +145,79 @@ type SavedSearch struct {
 	Live   bool       `json:"live,omitempty"`
 }
 
+// SearchHistoryEntry is a single committed query — one the user has
+// clicked a result on or pressed Enter on, not just typed. Drives
+// the Recent / Frequent views in the Chrome extension and Mac
+// sidebar.
+type SearchHistoryEntry struct {
+	Query      string    `json:"query"`
+	Count      int       `json:"count"`
+	LastUsedAt time.Time `json:"last_used_at"`
+}
+
+// FeedSource is a watched feed the user has subscribed to. The poller
+// reads `kind` + `url` to fetch new entries, deduping by guid against
+// existing FeedCandidate rows. Default tags and collection are applied
+// to candidates when the user stashes them (or auto-stashes via
+// AutoStash). PollIntervalMinutes is advisory — the poller may run more
+// or less often depending on the host loop.
+type FeedSource struct {
+	ID                  int64      `json:"id"`
+	Name                string     `json:"name"`
+	Kind                string     `json:"kind"`
+	URL                 string     `json:"url"`
+	DefaultTags         []string   `json:"default_tags,omitempty"`
+	DefaultCollection   string     `json:"default_collection,omitempty"`
+	AutoStash           bool       `json:"auto_stash,omitempty"`
+	// FetchContent: when true, the poller fetches each new candidate's
+	// article URL through the readability extractor and stores the
+	// full article body as the candidate's description. Off by default
+	// because it generates one HTTP request per new candidate; opt-in
+	// for sources that ship thin descriptions (Hacker News, etc.).
+	FetchContent        bool       `json:"fetch_content,omitempty"`
+	PollIntervalMinutes int        `json:"poll_interval_minutes"`
+	Enabled             bool       `json:"enabled"`
+	LastPolledAt        *time.Time `json:"last_polled_at,omitempty"`
+	LastError           string     `json:"last_error,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+// FeedCandidate is one feed entry awaiting triage. Until the user acts,
+// state is "unread"; pressing S stashes (links StashedItemID to the new
+// stash row), X dismisses, Z snoozes (SnoozeUntil set). Dismissed and
+// stashed rows are kept so the same guid won't re-appear if the feed
+// republishes it.
+type FeedCandidate struct {
+	ID                  int64      `json:"id"`
+	SourceID            int64      `json:"source_id"`
+	SourceName          string     `json:"source_name,omitempty"` // joined-in for display
+	GUID                string     `json:"guid"`
+	URL                 string     `json:"url"`
+	Title               string     `json:"title,omitempty"`
+	Description         string     `json:"description,omitempty"`
+	// DescriptionMarkdown is the Markdown-converted form of Description,
+	// computed once at poll time so the Mac Inbox preview pane renders
+	// instantly. Empty for legacy rows captured before the migration —
+	// `stash feeds reconvert` backfills them.
+	DescriptionMarkdown string     `json:"description_markdown,omitempty"`
+	ThumbnailURL        string     `json:"thumbnail_url,omitempty"`
+	PublishedAt         *time.Time `json:"published_at,omitempty"`
+	DiscoveredAt        time.Time  `json:"discovered_at"`
+	State               string     `json:"state"`
+	StateChangedAt      time.Time  `json:"state_changed_at"`
+	SnoozeUntil         *time.Time `json:"snooze_until,omitempty"`
+	StashedItemID       string     `json:"stashed_item_id,omitempty"`
+}
+
+// FeedCandidate states.
+const (
+	FeedStateUnread    = "unread"
+	FeedStateStashed   = "stashed"
+	FeedStateDismissed = "dismissed"
+	FeedStateSnoozed   = "snoozed"
+)
+
 // DupeResult groups items that are potential duplicates.
 type DupeResult struct {
 	Method     string       `json:"method"` // "hash", "url", "title"

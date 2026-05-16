@@ -95,6 +95,42 @@ func TestAllMatchingRulesContributeTags(t *testing.T) {
 	}
 }
 
+func TestPriority_HigherFiresFirst(t *testing.T) {
+	// Two collection-setting rules; SetCollection is first-match-wins.
+	// Rule "b" appears second in the file but has higher priority, so
+	// it should win — `first-coll` from "a" must lose.
+	rs := &Ruleset{Rules: []Rule{
+		{Name: "a", Match: Match{Type: "url"}, Actions: []Action{collectionAction("first-coll")}},
+		{Name: "b", Priority: 10, Match: Match{Type: "url"}, Actions: []Action{collectionAction("second-coll")}},
+	}}
+	res := rs.Apply(urlItem("https://example.com"))
+	if res.Collection != "second-coll" {
+		t.Errorf("collection=%q, want second-coll (priority should win)", res.Collection)
+	}
+	// Both rules still appear in MatchedRules (priority only changes
+	// ordering, not whether they matched).
+	if len(res.MatchedRules) != 2 {
+		t.Errorf("expected both rules to match, got %v", res.MatchedRules)
+	}
+}
+
+func TestStopAfterMatch_HaltsEvaluation(t *testing.T) {
+	rs := &Ruleset{Rules: []Rule{
+		{Name: "halt", Match: Match{Type: "url"}, Actions: []Action{tagsAction("first")}, StopAfterMatch: true},
+		{Name: "should-not-run", Match: Match{Type: "url"}, Actions: []Action{tagsAction("second")}},
+	}}
+	res := rs.Apply(urlItem("https://example.com"))
+	if !contains(res.Tags, "first") {
+		t.Errorf("expected `first` tag from the halting rule: %v", res.Tags)
+	}
+	if contains(res.Tags, "second") {
+		t.Errorf("second rule should have been skipped, got tags: %v", res.Tags)
+	}
+	if len(res.MatchedRules) != 1 || res.MatchedRules[0] != "halt" {
+		t.Errorf("expected only `halt` matched, got %v", res.MatchedRules)
+	}
+}
+
 func TestFirstMatchWins_Collection(t *testing.T) {
 	rs := &Ruleset{Rules: []Rule{
 		{Name: "first", Match: Match{Type: "url"}, Actions: []Action{collectionAction("first-coll")}},

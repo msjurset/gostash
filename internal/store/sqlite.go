@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/msjurset/gostash/internal/model"
 
@@ -91,8 +92,34 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemCollectionsPosition(); err != nil {
 		return fmt.Errorf("migrate item_collections.position: %w", err)
 	}
+	if err := s.migrateFeedCandidateMarkdown(); err != nil {
+		return fmt.Errorf("migrate feed_candidates.description_markdown: %w", err)
+	}
+	if err := s.migrateFeedSourceFetchContent(); err != nil {
+		return fmt.Errorf("migrate feed_sources.fetch_content: %w", err)
+	}
 
 	return nil
+}
+
+// migrateFeedSourceFetchContent adds the `fetch_content` opt-in flag.
+// When true, the poller follows each new candidate's URL through the
+// same readability-extraction path `stash refresh` uses, then writes
+// the result back to `description` + `description_markdown`. Lets
+// thin-description feeds (Hacker News, aggregators that ship just a
+// title and link) produce inbox-rich content. Idempotent.
+func (s *SQLiteStore) migrateFeedSourceFetchContent() error {
+	return s.addColumnIfMissing("feed_sources", "fetch_content",
+		`ALTER TABLE feed_sources ADD COLUMN fetch_content INTEGER NOT NULL DEFAULT 0`)
+}
+
+// migrateFeedCandidateMarkdown caches the Markdown-rendered form of
+// each candidate's description alongside the raw HTML. Populated
+// once at poll-time so the Mac app's Inbox preview pane renders
+// instantly without spawning a CLI roundtrip. Idempotent.
+func (s *SQLiteStore) migrateFeedCandidateMarkdown() error {
+	return s.addColumnIfMissing("feed_candidates", "description_markdown",
+		`ALTER TABLE feed_candidates ADD COLUMN description_markdown TEXT NOT NULL DEFAULT ''`)
 }
 
 // migrateItemCollectionsPosition adds the position column that backs
@@ -220,14 +247,45 @@ func (s *SQLiteStore) Checkpoint() error {
 // prefixQuery converts a plain search string into an FTS5 prefix query
 // so that partial words match. "hello wor" becomes "hello* wor*".
 // Words that already end with * are left as-is.
+//
+// Sanitization step: FTS5 query syntax rejects bare punctuation
+// (`?`, `!`, `:`, `(`, `)`, `"`, etc.) — they're either operators or
+// invalid characters depending on the version, and an FTS5
+// "syntax error near \"?\"" propagates straight to the Mac app as a
+// generic "data couldn't be read" dialog. We strip everything
+// that's not a letter/digit/whitespace/underscore-or-hyphen from
+// each word, then prefix-match what's left. Loses the ability to
+// search for literal punctuation (no `what?` literal-match), but
+// FTS5's default tokenizer would have dropped those characters at
+// index time anyway, so the result set is the same.
 func prefixQuery(q string) string {
-	words := strings.Fields(q)
+	cleaned := ftsSanitize(q)
+	words := strings.Fields(cleaned)
 	for i, w := range words {
 		if !strings.HasSuffix(w, "*") {
 			words[i] = w + "*"
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+// ftsSanitize keeps letters, digits, whitespace, underscore, and
+// hyphen. Everything else is replaced with a space. Letter/digit are
+// matched against the full Unicode tables so non-ASCII queries still
+// work (Cyrillic, accented Latin, CJK, etc.).
+func ftsSanitize(q string) string {
+	var b strings.Builder
+	b.Grow(len(q))
+	for _, r := range q {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r),
+			unicode.IsSpace(r), r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune(' ')
+		}
+	}
+	return b.String()
 }
 
 // CreateItem inserts a new item and its tags/collections.
@@ -323,13 +381,25 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 		return s.ListItems(ctx, filter)
 	}
 
+	// Sanitize first so we can detect "all punctuation" queries (e.g.
+	// a lone `"` or `?`). FTS5 errors on an empty MATCH expression, so
+	// after stripping operators we may be left with nothing usable —
+	// in that case we fall back to ListItems with whatever non-text
+	// filters were also set (tag, type, etc.). A query of only `"`
+	// effectively means "no search yet"; the user is mid-typing.
+	ftsQuery := prefixQuery(filter.Query)
+	if strings.TrimSpace(ftsQuery) == "" {
+		return s.ListItems(ctx, filter)
+	}
+
 	var where []string
 	var args []any
 
 	// Build FTS5 query with prefix wildcards so partial words match.
 	// Also match items whose tags contain any of the search words.
-	ftsQuery := prefixQuery(filter.Query)
-	words := strings.Fields(filter.Query)
+	// Tag LIKE uses the SAME sanitized words so a `"` in the search
+	// query doesn't poison the tag pattern either.
+	words := strings.Fields(ftsSanitize(filter.Query))
 	tagLikes := make([]string, len(words))
 	var tagArgs []any
 	for i, w := range words {
@@ -563,6 +633,25 @@ func (s *SQLiteStore) GetItemByContentHash(ctx context.Context, hash string) (*m
 		return nil, err
 	}
 	return item, nil
+}
+
+// CountItemsByContentHash returns how many items (archived + live)
+// reference the given content hash. Used by the delete paths to
+// decide whether the on-disk blob is safe to remove — a positive
+// count after the item's row is gone means another item still
+// shares the bytes, and yanking the file would leave a dangling
+// reference. Hash "" always returns 0.
+func (s *SQLiteStore) CountItemsByContentHash(ctx context.Context, hash string) (int, error) {
+	if hash == "" {
+		return 0, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM items WHERE content_hash = ?`, hash).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count by content hash: %w", err)
+	}
+	return n, nil
 }
 
 // ListURLsWithoutContent returns URL items that have no extracted text.
@@ -1292,6 +1381,98 @@ func (s *SQLiteStore) RenameSavedSearch(ctx context.Context, oldName, newName st
 		return fmt.Errorf("saved search not found: %s", oldName)
 	}
 	return nil
+}
+
+// RecordSearchClick appends one row to the search-click log. `query`
+// is the text in the search field at the moment the user committed
+// (clicked a result or pressed Enter). `itemID` is the specific
+// item that got the click — may be empty when the commit happened
+// without selecting a row.
+//
+// Empty queries are silently ignored so callers don't have to
+// guard. The same query may appear repeatedly; views aggregate
+// via GROUP BY at read time.
+func (s *SQLiteStore) RecordSearchClick(ctx context.Context, query, itemID string) error {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil
+	}
+	var idArg any
+	if strings.TrimSpace(itemID) != "" {
+		idArg = itemID
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO search_click_log (query, item_id, clicked_at)
+		VALUES (?, ?, ?)`,
+		q, idArg, time.Now().UTC().Unix(),
+	)
+	return err
+}
+
+// SearchHistorySort selects the order returned by
+// ListSearchHistory. "recent" → MAX(clicked_at) DESC,
+// "frequent" → COUNT(*) DESC.
+type SearchHistorySort string
+
+const (
+	SearchHistoryRecent   SearchHistorySort = "recent"
+	SearchHistoryFrequent SearchHistorySort = "frequent"
+)
+
+// ListSearchHistory groups the click log by query and returns
+// either the most-recently-used or most-frequent queries.
+// Limit ≤ 0 means "all".
+func (s *SQLiteStore) ListSearchHistory(ctx context.Context, sortBy SearchHistorySort, limit int) ([]model.SearchHistoryEntry, error) {
+	var orderBy string
+	switch sortBy {
+	case SearchHistoryFrequent:
+		// Frequent: highest count first; ties go to most-recently-
+		// used so a query you used yesterday outranks one you used
+		// a year ago when both have the same count.
+		orderBy = "count DESC, last_used_at DESC"
+	default:
+		orderBy = "last_used_at DESC"
+	}
+	query := `
+		SELECT query, COUNT(*) AS count, MAX(clicked_at) AS last_used_at
+		FROM search_click_log
+		GROUP BY query
+		ORDER BY ` + orderBy
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.SearchHistoryEntry
+	for rows.Next() {
+		var e model.SearchHistoryEntry
+		var ts int64
+		if err := rows.Scan(&e.Query, &e.Count, &ts); err != nil {
+			return nil, err
+		}
+		e.LastUsedAt = time.Unix(ts, 0).UTC()
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearSearchHistory drops the entire click log. Used by the
+// Settings "clear history" button (future) and tests.
+func (s *SQLiteStore) ClearSearchHistory(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM search_click_log`)
+	return err
+}
+
+// DeleteSearchHistoryEntry removes all log rows for one query.
+// Used when the user dismisses a row in the Recent / Frequent view.
+func (s *SQLiteStore) DeleteSearchHistoryEntry(ctx context.Context, query string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM search_click_log WHERE query = ?`, query)
+	return err
 }
 
 // Stats returns aggregate statistics about the stash.

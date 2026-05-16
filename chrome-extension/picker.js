@@ -28,6 +28,58 @@ let pageURL = "";
 let pageTitle = "";
 let allCandidates = [];
 
+// Track issued object URLs so we can revoke them on re-render and
+// avoid leaking memory across filter passes / candidate refresh.
+const objectURLs = new Set();
+function clearObjectURLs() {
+  for (const u of objectURLs) URL.revokeObjectURL(u);
+  objectURLs.clear();
+}
+
+// Lazy-load thumbnails when they scroll into view. The page may
+// have 50+ image candidates — fetching everything up front would
+// waste bandwidth and slow first paint. The observer flips each
+// thumb's data-thumb-url into an authenticated fetch only when
+// the row is visible.
+const thumbObserver = new IntersectionObserver(
+  (entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const el = entry.target;
+      thumbObserver.unobserve(el);
+      const url = el.dataset.thumbUrl;
+      if (url) loadThumb(el, url);
+    }
+  },
+  { rootMargin: "200px 0px" } // start loading slightly before scroll
+);
+
+async function loadThumb(thumbEl, url) {
+  try {
+    // Route through the service worker — extension pages still run
+    // cross-origin fetches through CORS preflight even with
+    // `<all_urls>` host_permissions, and most image CDNs reject the
+    // preflight. The service worker's `fetch` bypasses CORS for any
+    // host the extension has permission for.
+    const resp = await chrome.runtime.sendMessage({
+      type: "fetch_thumb",
+      url,
+    });
+    if (!resp || !resp.ok || !resp.dataURL) {
+      throw new Error(resp?.error || "fetch failed");
+    }
+    const img = document.createElement("img");
+    img.src = resp.dataURL;
+    img.referrerPolicy = "no-referrer";
+    thumbEl.innerHTML = "";
+    thumbEl.appendChild(img);
+  } catch (err) {
+    // Keep the 🖼 placeholder that's already in the DOM. The
+    // real download via stash_blob may still succeed at Stash
+    // time even if the thumb preview can't render here.
+  }
+}
+
 (async function init() {
   if (!token) {
     setStatus("Missing picker token. Close this window and try again.", "error");
@@ -79,6 +131,9 @@ function renderReady(state) {
 
 function renderList() {
   const filter = filterEl.value.trim().toLowerCase();
+  // Revoke any object URLs we issued in a previous render so
+  // filter / re-discover passes don't leak memory.
+  clearObjectURLs();
   candidatesEl.innerHTML = "";
 
   for (const cand of allCandidates) {
@@ -98,18 +153,15 @@ function renderList() {
     const thumb = document.createElement("div");
     thumb.className = "thumb";
     if (cand.kind === "image") {
-      const img = document.createElement("img");
-      img.src = cand.url;
-      img.referrerPolicy = "no-referrer";
-      img.onerror = () => {
-        // Some CDNs block hot-linking — show a placeholder
-        // instead of a broken <img>. We still pull the file via
-        // the native host (with Referer) when the user clicks
-        // Stash, so a thumb-fail doesn't predict download
-        // failure.
-        thumb.innerHTML = "<span class=\"placeholder\">🖼</span>";
-      };
-      thumb.appendChild(img);
+      // Direct <img src=...> fails on hot-link-blocking CDNs like
+      // lh3.googleusercontent.com — they 403 without the right
+      // Referer/cookies. Use authenticated fetch (same path
+      // stash_blob uses to actually grab the file) and feed an
+      // object URL into the <img>. Lazy-loaded via IO so a
+      // 50-image page doesn't fetch everything up front.
+      thumb.innerHTML = "<span class=\"placeholder\">🖼</span>";
+      thumb.dataset.thumbUrl = cand.url;
+      thumbObserver.observe(thumb);
     } else {
       const ph = document.createElement("span");
       ph.className = "placeholder";

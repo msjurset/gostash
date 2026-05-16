@@ -8,6 +8,23 @@
   <div id="app">
     <div id="header">
       <h1>Stash</h1>
+      <button id="view-toggle" class="view-toggle" type="button" title="Show recent" aria-label="Cycle browse view">
+        <!-- Three icons, one visible at a time based on current view.
+             Cycles: cloud → recent → frequent → cloud.
+             Tooltip shows the NEXT view it will switch to. -->
+        <svg class="view-icon view-icon-cloud" width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M5.5 14 A3.5 3.5 0 0 1 5.5 7 A4 4 0 0 1 13 6 A3 3 0 0 1 16 13 Z" fill="none" stroke="#e0e0e0" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+        <svg class="view-icon view-icon-recent" width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="10" cy="10" r="7" fill="none" stroke="#e0e0e0" stroke-width="1.5"/>
+          <path d="M10 5.5 V10 L13 12" fill="none" stroke="#e0e0e0" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <svg class="view-icon view-icon-frequent" width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="3"  y="11" width="3" height="5" fill="#e0e0e0"/>
+          <rect x="8.5" y="7"  width="3" height="9" fill="#e0e0e0"/>
+          <rect x="14"  y="9"  width="3" height="7" fill="#e0e0e0"/>
+        </svg>
+      </button>
       <button id="mode-btn" class="mode-btn" type="button" title="Add to your Stash" aria-label="Add to your Stash">
         <svg class="icon-add" width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <circle cx="11" cy="11" r="10" fill="#4CAF50"/>
@@ -67,6 +84,8 @@
         <div id="search-tag-dropdown" class="tag-dropdown hidden"></div>
       </div>
       <div id="tag-cloud"></div>
+      <div id="recent-list" class="history-list hidden"></div>
+      <div id="frequent-list" class="history-list hidden"></div>
       <div id="search-results"></div>
     </div>
   </div>

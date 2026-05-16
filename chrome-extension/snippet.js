@@ -62,6 +62,10 @@ const cancelBtn = document.getElementById("cancel");
 
   await loadCollections();
   searchEl.focus();
+  // Pre-load recent items so the Append list is useful before
+  // the user types — covers the "I just stashed something,
+  // append a note to it" flow.
+  runSearch("");
 })();
 
 // Mode toggle: show only the section for the active mode.
@@ -84,12 +88,22 @@ function currentMode() {
 searchEl.addEventListener("input", () => {
   clearTimeout(searchTimer);
   const q = searchEl.value.trim();
-  if (!q) {
-    resultsEl.innerHTML = "";
-    return;
-  }
   // Debounce so we don't fire a native message on every keystroke.
-  searchTimer = setTimeout(() => runSearch(q), 200);
+  // Empty query is intentionally allowed — it falls through to
+  // ListItems on the native side, which returns recent items
+  // newest-first. Common case: the user just stashed an image
+  // and wants to append a snippet to it; the top of the list is
+  // almost always what they're looking for.
+  searchTimer = setTimeout(() => runSearch(q), q ? 200 : 0);
+});
+
+// Focusing the search field with no query in flight also loads
+// the recent-items list so the user doesn't have to type just to
+// see anything.
+searchEl.addEventListener("focus", () => {
+  if (!searchEl.value.trim() && resultsEl.children.length === 0) {
+    runSearch("");
+  }
 });
 
 async function runSearch(query) {

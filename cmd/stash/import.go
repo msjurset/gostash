@@ -106,11 +106,16 @@ func runImport(cmd *cobra.Command, args []string) error {
 						fmt.Sprintf("[%s] replace failed: %v", shortID(entry.ID), err))
 					continue
 				}
-				if existing.ContentHash != "" {
-					_ = fs.Delete(existing.ContentHash)
-				}
 				if existing.ThumbnailPath != "" {
 					_ = fs.RemoveRelative(existing.ThumbnailPath)
+				}
+				// Refcount-guard the blob delete — if another item
+				// (perhaps imported earlier in the same archive)
+				// shares this content_hash, leave the bytes in place.
+				if existing.ContentHash != "" {
+					if refs, err := s.CountItemsByContentHash(ctx, existing.ContentHash); err == nil && refs == 0 {
+						_ = fs.Delete(existing.ContentHash)
+					}
 				}
 				summary.Replaced++
 			case archive.PolicyNewID:

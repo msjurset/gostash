@@ -53,15 +53,23 @@ func runBulkDelete(cmd *cobra.Command, args []string) error {
 	ok := 0
 
 	for _, item := range items {
-		if item.ContentHash != "" {
-			fs.Delete(item.ContentHash)
+		if err := s.DeleteItem(ctx, item.ID); err != nil {
+			errs = append(errs, fmt.Errorf("[%s] %w", shortID(item.ID), err))
+			continue
 		}
 		if item.ThumbnailPath != "" {
 			fs.RemoveRelative(item.ThumbnailPath)
 		}
-		if err := s.DeleteItem(ctx, item.ID); err != nil {
-			errs = append(errs, fmt.Errorf("[%s] %w", shortID(item.ID), err))
-			continue
+		// Refcount the shared blob before yanking the file —
+		// otherwise deleting one of two duplicates leaves the
+		// surviving record with a dangling store_path. Counted
+		// AFTER the row is deleted so this item's own row doesn't
+		// count toward "still referenced."
+		if item.ContentHash != "" {
+			refs, err := s.CountItemsByContentHash(ctx, item.ContentHash)
+			if err == nil && refs == 0 {
+				fs.Delete(item.ContentHash)
+			}
 		}
 		ok++
 		if !flagJSON {

@@ -2,9 +2,25 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/msjurset/gostash/internal/model"
 )
+
+// FeedCandidateFilter narrows ListFeedCandidates.
+// Default (zero value) returns unread candidates across all sources.
+type FeedCandidateFilter struct {
+	SourceID int64    // 0 = all sources
+	States   []string // empty = ["unread"]
+	Limit    int      // 0 = unlimited (callers should cap)
+}
+
+// ResurfaceParams controls PickResurfaceItems.
+type ResurfaceParams struct {
+	Limit               int           // how many items to return; default 5
+	MinIdleAgo          time.Duration // skip items seen more recently than this; default 30d
+	DismissCooldown     time.Duration // skip items dismissed within this window; default 6mo
+}
 
 // Store defines the persistence interface for gostash.
 type Store interface {
@@ -20,6 +36,7 @@ type Store interface {
 	ExistsByURL(ctx context.Context, url string) (bool, error)
 	GetItemByURL(ctx context.Context, url string) (*model.Item, error)
 	GetItemByContentHash(ctx context.Context, hash string) (*model.Item, error)
+	CountItemsByContentHash(ctx context.Context, hash string) (int, error)
 	ListURLsWithoutContent(ctx context.Context, limit int) ([]model.Item, error)
 
 	// Tags
@@ -58,6 +75,42 @@ type Store interface {
 
 	// Stats
 	Stats(ctx context.Context) (*model.StashStats, error)
+
+	// Search-click log (Recent / Frequent views).
+	RecordSearchClick(ctx context.Context, query, itemID string) error
+	ListSearchHistory(ctx context.Context, sortBy SearchHistorySort, limit int) ([]model.SearchHistoryEntry, error)
+	ClearSearchHistory(ctx context.Context) error
+	DeleteSearchHistoryEntry(ctx context.Context, query string) error
+
+	// Feed sources (subscriptions).
+	CreateFeedSource(ctx context.Context, src *model.FeedSource) error
+	GetFeedSource(ctx context.Context, idOrName string) (*model.FeedSource, error)
+	ListFeedSources(ctx context.Context, enabledOnly bool) ([]model.FeedSource, error)
+	UpdateFeedSource(ctx context.Context, src *model.FeedSource) error
+	DeleteFeedSource(ctx context.Context, idOrName string) error
+	TouchFeedSourcePoll(ctx context.Context, id int64, errMsg string) error
+
+	// Feed candidates (triage inbox).
+	UpsertFeedCandidate(ctx context.Context, c *model.FeedCandidate) (created bool, err error)
+	GetFeedCandidate(ctx context.Context, id int64) (*model.FeedCandidate, error)
+	ListFeedCandidates(ctx context.Context, filter FeedCandidateFilter) ([]model.FeedCandidate, error)
+	UpdateFeedCandidateState(ctx context.Context, id int64, state string, snoozeUntil *time.Time, stashedItemID string) error
+	UpdateFeedCandidateMarkdown(ctx context.Context, id int64, markdown string) error
+	UpdateFeedCandidateContent(ctx context.Context, id int64, description, markdown string) error
+	ExpireSnoozedCandidates(ctx context.Context, now time.Time) (int, error)
+
+	// Related — score every other item by how much it overlaps with
+	// the given source item (shared tags, same domain, same content
+	// hash, existing manual link, shared collection). Used by the
+	// "Related items" section in the Mac detail pane.
+	RelatedItems(ctx context.Context, source *model.Item, limit int) ([]model.Item, error)
+
+	// Resurface — picking forgotten stash items for the Inbox's
+	// "From your stash" section.
+	PickResurfaceItems(ctx context.Context, params ResurfaceParams) ([]model.Item, error)
+	MarkResurfaced(ctx context.Context, itemID string, now time.Time) error
+	DismissResurface(ctx context.Context, itemID string, now time.Time) error
+	SnoozeResurface(ctx context.Context, itemID string, until time.Time) error
 
 	Checkpoint() error
 	Close() error

@@ -63,6 +63,65 @@ body {
   display: inline-block;
 }
 
+/* View toggle (cloud / recent / frequent). Same shape and size as
+   mode-btn but sits to its left; only one of the three SVG icons
+   is visible at a time. */
+.view-toggle {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  margin-right: 4px;
+  transition: background 0.12s, transform 0.08s;
+}
+.view-toggle:hover  { background: #2a2a2a; }
+.view-toggle:active { transform: scale(0.94); }
+
+.view-toggle .view-icon { display: none; }
+.view-toggle.view-cloud    .view-icon-cloud    { display: inline-block; }
+.view-toggle.view-recent   .view-icon-recent   { display: inline-block; }
+.view-toggle.view-frequent .view-icon-frequent { display: inline-block; }
+
+/* Recent / Frequent history rows. Each row is a clickable
+   "search criteria" line — clicking it populates the search
+   input and runs the search. */
+.history-list {
+  padding: 6px 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #e0e0e0;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 1px 4px;
+}
+.history-row:hover {
+  background: #2c2c2e;
+}
+.history-row .row-query {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-row .row-meta {
+  font-size: 10px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
 #status {
   font-size: 11px;
   padding: 2px 8px;
@@ -226,7 +285,7 @@ button.primary:disabled {
   border: 1px solid #3a3a3a;
   border-top: none;
   border-radius: 0 0 4px 4px;
-  max-height: 150px;
+  max-height: 280px;
   overflow-y: auto;
   z-index: 10;
 }

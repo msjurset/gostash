@@ -398,7 +398,7 @@ func runThumbnailCandidates(item *model.Item, fromURL string) error {
 	if err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
-	printJSON(cands)
+	printJSONSlice(cands)
 	return nil
 }
 

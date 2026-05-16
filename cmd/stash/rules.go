@@ -43,7 +43,7 @@ var rulesListCmd = &cobra.Command{
 			return err
 		}
 		if flagJSON {
-			printJSON(rs.Rules)
+			printJSONSlice(rs.Rules)
 			return nil
 		}
 		if len(rs.Rules) == 0 {

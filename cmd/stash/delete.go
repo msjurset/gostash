@@ -48,19 +48,26 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Delete stored file + thumbnail if present
+	if err := s.DeleteItem(ctx, id); err != nil {
+		return err
+	}
+
+	// Thumbnail is per-item (`thumbnails/<id>.jpg`), safe to remove
+	// unconditionally. The content blob is hash-addressed and can be
+	// shared by duplicate items — only remove it when no other row
+	// references the same content_hash, otherwise the surviving
+	// sibling ends up with a dangling pointer.
 	if item.ContentHash != "" || item.ThumbnailPath != "" {
 		fs := openFileStore()
-		if item.ContentHash != "" {
-			fs.Delete(item.ContentHash)
-		}
 		if item.ThumbnailPath != "" {
 			fs.RemoveRelative(item.ThumbnailPath)
 		}
-	}
-
-	if err := s.DeleteItem(ctx, id); err != nil {
-		return err
+		if item.ContentHash != "" {
+			refs, err := s.CountItemsByContentHash(ctx, item.ContentHash)
+			if err == nil && refs == 0 {
+				fs.Delete(item.ContentHash)
+			}
+		}
 	}
 
 	if flagJSON {

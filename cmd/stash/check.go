@@ -15,6 +15,7 @@ import (
 
 	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/model"
+	"github.com/msjurset/gostash/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -45,6 +46,7 @@ func init() {
 	checkCmd.Flags().Bool("dupes", false, "Check for duplicate content hashes")
 	checkCmd.Flags().Bool("stream", false, "Emit NDJSON events progressively as issues are discovered")
 	checkCmd.Flags().String("id", "", "Limit URL re-check to a single item id (used after editing a broken URL — fast verify rather than re-fetching the whole library)")
+	checkCmd.Flags().Bool("heal", false, "After the file check, try to heal each missing-blob item by re-fetching its source URL (image/file items only)")
 	rootCmd.AddCommand(checkCmd)
 }
 
@@ -172,6 +174,17 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	if all || files {
 		if err := checkFiles(ctx, s, emit); err != nil {
 			return fmt.Errorf("file check: %w", err)
+		}
+	}
+
+	// Heal missing blobs in place. Walks the issues the file check
+	// just emitted, looks up each item, and runs the same `healOne`
+	// path as `stash heal --all` for those that are eligible
+	// (image/file with a URL). Reports inline in non-stream mode;
+	// in stream mode each healed item gets an extra event.
+	if heal, _ := cmd.Flags().GetBool("heal"); heal && (all || files) {
+		if err := runCheckHeal(ctx, s, emit, stream); err != nil {
+			return fmt.Errorf("heal pass: %w", err)
 		}
 	}
 
@@ -304,6 +317,64 @@ func checkFiles(ctx context.Context, s interface {
 		}
 	}
 
+	return nil
+}
+
+// runCheckHeal walks the library after the file check has emitted
+// its missing-blob issues and tries to fix each one by re-fetching
+// from the item's source URL. Reuses the same `healOne` logic as
+// `stash heal --all`. Operates independently of the emitter's stream
+// vs. accumulated state — we re-walk the items table here, since the
+// blob set on disk and item URLs are all the heal pass needs.
+func runCheckHeal(ctx context.Context, s store.Store, emit *emitter, stream bool) error {
+	items, err := s.ListItems(ctx, model.ItemFilter{Limit: 100000})
+	if err != nil {
+		return err
+	}
+	fs := openFileStore()
+	var healed, rehashed int
+	var errs []string
+	for _, item := range items {
+		if !healEligible(item) {
+			continue
+		}
+		if fs.Exists(item.ContentHash) {
+			continue
+		}
+		outcome, err := healOne(ctx, s, fs, item)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("[%s] %v", shortID(item.ID), err))
+			if stream {
+				_ = emit.enc.Encode(checkEvent{
+					Type: "heal_error",
+					Issue: &model.CheckIssue{ID: item.ID, Title: item.Title, Detail: err.Error()},
+				})
+			}
+			continue
+		}
+		healed++
+		if outcome == healOutcomeRehashed {
+			rehashed++
+		}
+		if stream {
+			_ = emit.enc.Encode(checkEvent{
+				Type: "healed",
+				Issue: &model.CheckIssue{ID: item.ID, Title: item.Title},
+			})
+		}
+	}
+	if !stream && !flagJSON {
+		if healed > 0 || len(errs) > 0 {
+			fmt.Printf("\nHealed %d item(s) (%d rehashed", healed, rehashed)
+			if len(errs) > 0 {
+				fmt.Printf(", %d error(s)", len(errs))
+			}
+			fmt.Println(")")
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "  error: %s\n", e)
+			}
+		}
+	}
 	return nil
 }
 

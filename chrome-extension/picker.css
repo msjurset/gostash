@@ -103,8 +103,8 @@ main {
 .cand input { margin-top: 4px; }
 
 .cand .thumb {
-  width: 48px;
-  height: 48px;
+  width: 96px;
+  height: 96px;
   background: #2c2c2e;
   border: 1px solid #3a3a3c;
   border-radius: 4px;

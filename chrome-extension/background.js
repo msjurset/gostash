@@ -745,7 +745,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
+  if (message.type === "fetch_thumb") {
+    // Picker calls this per-image when rendering thumbnails. Routed
+    // through the service worker (rather than fetching from the
+    // picker page directly) because MV3 extension pages still run
+    // cross-origin `fetch` through the standard CORS preflight even
+    // with `<all_urls>` host_permissions — and most image CDNs don't
+    // send the headers that would allow it. The service worker's
+    // fetch bypasses that check.
+    fetchThumbDataURL(message.url)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
 });
+
+async function fetchThumbDataURL(url) {
+  let res;
+  try {
+    res = await fetch(url, { credentials: "include" });
+  } catch (err) {
+    return { ok: false, error: "fetch: " + err.message };
+  }
+  if (!res.ok) {
+    return { ok: false, error: "HTTP " + res.status };
+  }
+  const mime = res.headers.get("Content-Type") || "image/jpeg";
+  if (!mime.startsWith("image/")) {
+    return { ok: false, error: "not an image (" + mime + ")" };
+  }
+  const buf = await res.arrayBuffer();
+  const base64 = arrayBufferToBase64(buf);
+  return { ok: true, dataURL: "data:" + mime + ";base64," + base64 };
+}
 
 // fetchAndStashBlob does the auth-aware download path: fetch from
 // the extension's service worker (which has host_permissions and

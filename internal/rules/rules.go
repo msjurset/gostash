@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/msjurset/gostash/internal/model"
@@ -154,8 +155,22 @@ type Rule struct {
 	Name        string   `yaml:"name" json:"name"`
 	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
 	Enabled     *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Match       Match    `yaml:"match" json:"match"`
-	Actions     []Action `yaml:"actions,omitempty" json:"actions,omitempty"`
+	// Priority controls evaluation order — higher values run first;
+	// ties keep the rules.yaml file order. Useful for putting a
+	// catch-all `domain: gmail.com → add_tags: [email]` rule before
+	// a generic "anything-with-text" rule, or for ensuring a
+	// `stop_after_match` rule wins over later ones it'd otherwise
+	// race with. Default 0 — behavior unchanged when unset.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Match    Match `yaml:"match" json:"match"`
+	Actions  []Action `yaml:"actions,omitempty" json:"actions,omitempty"`
+	// StopAfterMatch terminates rule evaluation immediately after
+	// this rule's actions apply. Combine with `priority` to express
+	// "if this matches first, ignore everything else." Useful for
+	// a `domain: example.com → add_tags: [vendor-specific]` rule
+	// that should pre-empt a generic catch-all that would otherwise
+	// also fire and double-tag.
+	StopAfterMatch bool `yaml:"stop_after_match,omitempty" json:"stop_after_match,omitempty"`
 }
 
 // IsEnabled reports whether the rule should run. Rules without an explicit
@@ -279,7 +294,19 @@ func (rs *Ruleset) ApplyWithContext(item *model.Item, ctx Context) Result {
 	}
 	addedTags := make(map[string]struct{})
 
+	// Order rules by priority desc; preserve file order for ties via
+	// SliceStable so the rules.yaml reads top-down for equal-priority
+	// blocks. Builds an index slice rather than mutating rs.Rules so
+	// the caller's YAML round-trips byte-for-byte unchanged.
+	order := make([]int, len(rs.Rules))
 	for i := range rs.Rules {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return rs.Rules[order[a]].Priority > rs.Rules[order[b]].Priority
+	})
+
+	for _, i := range order {
 		rule := &rs.Rules[i]
 		if !rule.IsEnabled() {
 			continue
@@ -399,6 +426,12 @@ func (rs *Ruleset) ApplyWithContext(item *model.Item, ctx Context) Result {
 				}
 				res.Thumbnail = &spec
 			}
+		}
+		// `stop_after_match` short-circuits: subsequent rules in the
+		// priority order are skipped. Effects accumulated so far stay
+		// in `res`; this only changes whether we KEEP evaluating.
+		if rule.StopAfterMatch {
+			break
 		}
 	}
 

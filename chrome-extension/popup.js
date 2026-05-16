@@ -19,6 +19,21 @@ const snippetText = document.getElementById("snippet-text");
 const searchTagDropdown = document.getElementById("search-tag-dropdown");
 const modeBtn = document.getElementById("mode-btn");
 
+// View toggle (cloud / recent / frequent). One is visible at a
+// time when the search input is empty; typing into the input
+// switches to live search results regardless of which view is
+// currently active.
+const viewToggle = document.getElementById("view-toggle");
+const recentList = document.getElementById("recent-list");
+const frequentList = document.getElementById("frequent-list");
+const VIEWS = ["cloud", "recent", "frequent"];
+const VIEW_LABELS = {
+  cloud:    "tag cloud",
+  recent:   "recent",
+  frequent: "frequent",
+};
+let currentView = "cloud";
+
 let currentTab = null;
 let allTags = [];
 let activeIndex = -1;
@@ -41,7 +56,7 @@ function switchTab(target) {
     modeBtn.setAttribute("aria-label", "Add to your Stash");
     searchInput.focus();
     if (searchInput.value.trim().length === 0) {
-      showTagCloud();
+      showBrowseView();
     }
   } else {
     modeBtn.classList.add("back");
@@ -58,6 +73,19 @@ modeBtn.addEventListener("click", () => {
 // --- Init ---
 
 async function init() {
+  // Restore the last browse view so a returning user lands on
+  // whatever they were using (cloud / recent / frequent).
+  // Defaults to "cloud" if there's no saved preference yet.
+  try {
+    const stored = await chrome.storage.local.get(["stashLastBrowseView"]);
+    if (stored.stashLastBrowseView && VIEWS.includes(stored.stashLastBrowseView)) {
+      currentView = stored.stashLastBrowseView;
+    }
+  } catch {
+    // Storage is unavailable in some sandboxed contexts — fall
+    // through with the default.
+  }
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab;
 
@@ -147,10 +175,29 @@ function getCurrentTag() {
 }
 
 function getExistingTags() {
-  return tagsInput.value
-    .split(",")
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean);
+  // Skip the tag at the cursor — it's mid-typed and shouldn't
+  // be filtered out of its own suggestion list. Tags are
+  // comma-separated; the cursor's current token is the segment
+  // between the last comma before the cursor and the next comma
+  // (or end of string). All other segments count as "already used".
+  const val = tagsInput.value;
+  const cursor = tagsInput.selectionStart;
+  // Walk through the comma-separated segments, tracking each
+  // segment's [start, end] range in the raw string.
+  const result = [];
+  let segmentStart = 0;
+  for (let i = 0; i <= val.length; i++) {
+    if (i === val.length || val[i] === ",") {
+      const segmentEnd = i;
+      const inCursorRange = cursor >= segmentStart && cursor <= segmentEnd;
+      if (!inCursorRange) {
+        const trimmed = val.substring(segmentStart, segmentEnd).trim().toLowerCase();
+        if (trimmed) result.push(trimmed);
+      }
+      segmentStart = i + 1;
+    }
+  }
+  return result;
 }
 
 function updateDropdown() {
@@ -379,8 +426,22 @@ function getSearchTagPartial() {
 }
 
 function getExistingSearchTags() {
-  const matches = searchInput.value.matchAll(/tag:(\S+)/g);
-  return Array.from(matches, (m) => m[1].toLowerCase());
+  // Skip the tag at the cursor — the user is mid-typing it, so it
+  // doesn't count as "already used" and should still appear in
+  // the suggestion list (matching the project's autocomplete
+  // contract: "the word currently being edited does not count as
+  // 'used'"). Without this guard, typing `tag:ra` excludes the
+  // exact-match tag named `ra` from its own suggestion list.
+  const val = searchInput.value;
+  const cursor = searchInput.selectionStart;
+  const tags = [];
+  for (const m of val.matchAll(/tag:(\S+)/g)) {
+    const tokenStart = m.index;
+    const tokenEnd = m.index + m[0].length;
+    if (cursor >= tokenStart && cursor <= tokenEnd) continue;
+    tags.push(m[1].toLowerCase());
+  }
+  return tags;
 }
 
 function updateSearchTagDropdown() {
@@ -406,7 +467,10 @@ function updateSearchTagDropdown() {
   searchTagDropdown.innerHTML = "";
   searchTagActiveIndex = -1;
 
-  matches.slice(0, 8).forEach((tag) => {
+  // Cap at 30 — enough to scroll through and find anything in
+  // a library with ~hundreds of tags, but bounded so the dropdown
+  // doesn't grow unbounded.
+  matches.slice(0, 30).forEach((tag) => {
     const div = document.createElement("div");
     div.className = "tag-option";
     div.innerHTML = `<span class="tag-name">${escapeHtml(tag.name)}</span><span class="tag-count">${tag.count || 0}</span>`;
@@ -446,7 +510,7 @@ function selectSearchTag(name) {
   clearTimeout(searchTimer);
   const query = searchInput.value.trim();
   if (query.length > 0) {
-    tagCloud.classList.add("hidden");
+    hideBrowseViews();
     searchTimer = setTimeout(() => doSearch(query), 200);
   }
 }
@@ -473,18 +537,28 @@ searchInput.addEventListener("input", () => {
   const query = searchInput.value.trim();
   searchClear.classList.toggle("hidden", query.length === 0);
 
+  // As soon as the field has any text, get the browse panes
+  // (cloud / recent / frequent) out of the way. The bug fix: the
+  // tag: autocomplete branch below used to return early, so the
+  // history pane stayed stacked above live search results.
+  if (query.length > 0) {
+    hideBrowseViews();
+  }
+
   // Check for tag: autocomplete first
   if (getSearchTagPartial() !== null) {
     updateSearchTagDropdown();
+    // Still run the live search underneath the tag dropdown so
+    // results refresh even while the user is mid-tag-completion.
+    searchTimer = setTimeout(() => doSearch(query), 200);
     return;
   }
   hideSearchTagDropdown();
 
   if (query.length === 0) {
-    showTagCloud();
+    showBrowseView();
     return;
   }
-  tagCloud.classList.add("hidden");
   searchTimer = setTimeout(() => doSearch(query), 200);
 });
 
@@ -584,21 +658,117 @@ searchClear.addEventListener("click", () => {
   searchInput.value = "";
   searchClear.classList.add("hidden");
   hideSearchTagDropdown();
-  showTagCloud();
+  showBrowseView();
   searchInput.focus();
 });
 
-function showTagCloud() {
+/// Hide all three browse-view containers (cloud / recent /
+/// frequent). Called whenever a live search is about to render
+/// results so the panes don't stack on top of each other.
+function hideBrowseViews() {
+  tagCloud.classList.add("hidden");
+  recentList.classList.add("hidden");
+  frequentList.classList.add("hidden");
+}
+
+/// Render the browse-view container that matches the current
+/// view setting (cloud / recent / frequent). Hides the search-
+/// results pane since the user just cleared the input.
+function showBrowseView() {
   searchResults.innerHTML = "";
-  tagCloud.classList.remove("hidden");
-  if (tagCloud.children.length === 0) {
-    loadTagCloud();
+  // Hide all three, then unhide the one we want.
+  tagCloud.classList.add("hidden");
+  recentList.classList.add("hidden");
+  frequentList.classList.add("hidden");
+  switch (currentView) {
+    case "recent":
+      recentList.classList.remove("hidden");
+      loadHistory("recent");
+      break;
+    case "frequent":
+      frequentList.classList.remove("hidden");
+      loadHistory("frequent");
+      break;
+    default:
+      tagCloud.classList.remove("hidden");
+      if (tagCloud.children.length === 0) loadTagCloud();
+  }
+  updateViewToggleUI();
+}
+
+/// Refresh the toggle button's icon + tooltip based on the
+/// current view. Tooltip describes the NEXT view the click will
+/// switch to, mirroring how the macOS Photos picker reads.
+function updateViewToggleUI() {
+  viewToggle.classList.remove("view-cloud", "view-recent", "view-frequent");
+  viewToggle.classList.add("view-" + currentView);
+  const i = VIEWS.indexOf(currentView);
+  const next = VIEWS[(i + 1) % VIEWS.length];
+  viewToggle.title = `Show ${VIEW_LABELS[next]}`;
+  viewToggle.setAttribute("aria-label", `Show ${VIEW_LABELS[next]}`);
+}
+
+/// Cycle: cloud → recent → frequent → cloud. Persists the new
+/// view to chrome.storage.local so the next popup open lands on
+/// the same one.
+viewToggle.addEventListener("click", () => {
+  const i = VIEWS.indexOf(currentView);
+  currentView = VIEWS[(i + 1) % VIEWS.length];
+  chrome.storage.local.set({ stashLastBrowseView: currentView });
+  showBrowseView();
+});
+
+/// Load Recent or Frequent rollup from the native host and
+/// render it into the matching pane. Empty result → "No history
+/// yet" placeholder.
+async function loadHistory(sort) {
+  const pane = sort === "frequent" ? frequentList : recentList;
+  pane.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    const resp = await sendMessage({
+      action: "search_history_list",
+      sort,
+      limit: 30,
+    });
+    if (!resp || !resp.ok) {
+      pane.innerHTML = `<div class="empty">${escapeHtml(resp?.error || "Failed to load")}</div>`;
+      return;
+    }
+    const entries = resp.history || [];
+    if (entries.length === 0) {
+      pane.innerHTML = `<div class="empty">No saved searches yet — click a result to record one.</div>`;
+      return;
+    }
+    pane.innerHTML = "";
+    for (const entry of entries) {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      row.innerHTML =
+        `<span class="row-query"></span>` +
+        `<span class="row-meta">${entry.count}×</span>`;
+      row.querySelector(".row-query").textContent = entry.query;
+      row.addEventListener("click", () => {
+        // Click on a history row = re-run that search. Repopulate
+        // the input, then dispatch the same search path live
+        // search uses. Won't double-record — the record happens
+        // only when the user clicks a RESULT, not a history row.
+        searchInput.value = entry.query;
+        searchClear.classList.remove("hidden");
+        hideBrowseViews();
+        doSearch(entry.query);
+      });
+      pane.appendChild(row);
+    }
+  } catch (err) {
+    pane.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
   }
 }
 
 async function loadRecent() {
   try {
-    const resp = await sendMessage({ action: "search", query: "", limit: 20 });
+    // No limit — show every match. The popup pane scrolls if the
+    // list is long; the user explicitly opted out of capping.
+    const resp = await sendMessage({ action: "search", query: "", limit: 100000 });
     if (resp.ok) {
       renderResults(resp.items || [], "Recent items");
     }
@@ -607,7 +777,7 @@ async function loadRecent() {
 
 async function doSearch(query) {
   try {
-    const resp = await sendMessage({ action: "search", query, limit: 20 });
+    const resp = await sendMessage({ action: "search", query, limit: 100000 });
     if (resp.ok) {
       renderResults(resp.items || [], "No results found");
     }
@@ -630,6 +800,19 @@ function renderResults(items, emptyText) {
     el.href = item.url || "#";
     el.addEventListener("click", (e) => {
       e.preventDefault();
+      // Record the search criteria at click time — the user has
+      // committed to this result, so the query in the field is
+      // worth remembering for Recent / Frequent. Fire-and-forget;
+      // failure is non-fatal and we never want to block opening
+      // the link.
+      const committed = searchInput.value.trim();
+      if (committed) {
+        sendMessage({
+          action: "search_history_record",
+          query: committed,
+          item_id: item.id,
+        }).catch(() => {});
+      }
       if (item.url) {
         chrome.tabs.create({ url: item.url });
         window.close();
@@ -694,7 +877,7 @@ function renderTagCloud(tags) {
     el.addEventListener("click", () => {
       searchInput.value = `tag:${tag.name}`;
       searchClear.classList.remove("hidden");
-      tagCloud.classList.add("hidden");
+      hideBrowseViews();
       doSearch(`tag:${tag.name}`);
     });
     tagCloud.appendChild(el);

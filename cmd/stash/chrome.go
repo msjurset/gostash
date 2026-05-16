@@ -59,6 +59,10 @@ type nativeRequest struct {
 	// fetch_url_pick: when true, bundle picks into a single
 	// zip-typed file item instead of N individual items.
 	Archive bool `json:"archive,omitempty"`
+	// fetch_url_pick: when true, also cross-link every pair of
+	// imported picks (clique rim edges) in addition to any
+	// source-spoke from LinkSource.
+	Clique bool `json:"clique,omitempty"`
 	// fetch_url_list: include every <a href> regardless of file
 	// extension (default: only allowlisted extensions).
 	AllLinks bool `json:"all_links,omitempty"`
@@ -77,6 +81,11 @@ type nativeRequest struct {
 	// permissions + cookie context and ships the bytes here.
 	BlobBase64 string `json:"blob_base64,omitempty"`
 	BlobMIME   string `json:"blob_mime,omitempty"`
+
+	// search_history_list: "recent" or "frequent" rollup of the
+	// click log. search_history_record: ItemID is the optional
+	// clicked-item ID — Query carries the search criteria.
+	Sort string `json:"sort,omitempty"`
 }
 
 type nativeResponse struct {
@@ -99,6 +108,9 @@ type nativeResponse struct {
 	// fetch_url_pick response.
 	Imported []pickedItem `json:"imported,omitempty"`
 	LinkedTo string       `json:"linked_to,omitempty"`
+
+	// search_history_list response.
+	History []model.SearchHistoryEntry `json:"history,omitempty"`
 }
 
 func runChromeHost(cmd *cobra.Command, args []string) error {
@@ -157,6 +169,10 @@ func handleNativeRequest(ctx context.Context, s store.Store, fs *filestore.FileS
 		return handleAppendNotes(ctx, s, req)
 	case "stash_blob":
 		return handleStashBlob(s, fs, req)
+	case "search_history_record":
+		return handleSearchHistoryRecord(ctx, s, req)
+	case "search_history_list":
+		return handleSearchHistoryList(ctx, s, req)
 	default:
 		return &nativeResponse{Error: fmt.Sprintf("unknown action: %s", req.Action)}
 	}
@@ -171,10 +187,14 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 	entropy := ulid.Monotonic(rand.New(rand.NewSource(now.UnixNano())), 0)
 	id := ulid.MustNew(ulid.Timestamp(now), entropy).String()
 
+	// Apply URL-exclusion rules from config.toml before storing,
+	// so captures from session-only pages (Gemini, OAuth, etc.)
+	// don't pollute the item's URL column.
+	storedURL, _ := config.RedactURL(req.URL)
 	item := &model.Item{
 		ID:        id,
 		Type:      model.TypeURL,
-		URL:       req.URL,
+		URL:       storedURL,
 		Title:     req.Title,
 		Notes:     req.Notes,
 		CreatedAt: now,
@@ -271,7 +291,9 @@ func handleStashText(ctx context.Context, s store.Store, req *nativeRequest) *na
 		// click back to where the selection came from. Snippets
 		// don't usually carry URLs, but for browser-captured
 		// selections it's the most useful provenance signal.
-		URL: req.URL,
+		// Redacted via config.RedactURL so session-only sources
+		// don't pollute the URL column.
+		URL: func() string { u, _ := config.RedactURL(req.URL); return u }(),
 	}
 
 	for _, t := range req.Tags {
@@ -619,6 +641,19 @@ func handleFetchURLPick(s store.Store, fs *filestore.FileStore, req *nativeReque
 				}
 			}
 		}
+		// Clique rim — N×(N−1)/2 mutual edges across imported. The
+		// Chrome surface trusts the user's explicit toggle and does
+		// not warn past the CLI's soft 15-pick threshold.
+		if req.Clique && len(imported) >= 2 {
+			ctx := context.Background()
+			for i := 0; i < len(imported); i++ {
+				for j := i + 1; j < len(imported); j++ {
+					if err := s.LinkItems(ctx, imported[i].ID, imported[j].ID, "clique", false); err != nil {
+						errors = append(errors, fmt.Sprintf("clique link: %v", err))
+					}
+				}
+			}
+		}
 	}
 
 	resp := &nativeResponse{
@@ -694,4 +729,32 @@ func truncateStr(s string, max int) string {
 		return s[:max-3] + "..."
 	}
 	return s
+}
+
+// handleSearchHistoryRecord appends one row to search_click_log.
+// req.Query is the search criteria committed-to; req.ItemID is
+// the (optional) clicked item id.
+func handleSearchHistoryRecord(ctx context.Context, s store.Store, req *nativeRequest) *nativeResponse {
+	if err := s.RecordSearchClick(ctx, req.Query, req.ItemID); err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("record: %v", err)}
+	}
+	return &nativeResponse{OK: true}
+}
+
+// handleSearchHistoryList rolls up the click log into Recent or
+// Frequent ordering and returns the top req.Limit (default 20).
+func handleSearchHistoryList(ctx context.Context, s store.Store, req *nativeRequest) *nativeResponse {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	sort := store.SearchHistoryRecent
+	if req.Sort == "frequent" {
+		sort = store.SearchHistoryFrequent
+	}
+	entries, err := s.ListSearchHistory(ctx, sort, limit)
+	if err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("list: %v", err)}
+	}
+	return &nativeResponse{OK: true, History: entries}
 }

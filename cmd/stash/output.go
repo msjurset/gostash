@@ -5,17 +5,81 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/model"
+	"golang.org/x/term"
 )
+
+// Lazy-initialized terminal markdown renderer. Lets `stash show`
+// emit ANSI-styled bold / headings / lists for Notes (and other
+// markdown-shaped fields) when stdout is a TTY — matches what
+// the user's fzf preview pane is, but without depending on a
+// per-file-extension renderer dispatcher.
+var (
+	mdRendererOnce sync.Once
+	mdRenderer     *glamour.TermRenderer
+	mdRendererErr  error
+)
+
+func markdownRenderer() (*glamour.TermRenderer, error) {
+	mdRendererOnce.Do(func() {
+		mdRenderer, mdRendererErr = glamour.NewTermRenderer(
+			glamour.WithStandardStyle("dark"),
+			glamour.WithWordWrap(80),
+		)
+	})
+	return mdRenderer, mdRendererErr
+}
+
+// renderMarkdown returns an ANSI-formatted version of `md` when
+// stdout is a terminal (or STASH_FORCE_MD is set), or the raw
+// input when not. STASH_NO_MD disables rendering even on TTYs —
+// for users whose existing wrappers do their own pass.
+func renderMarkdown(md string) string {
+	if md == "" || !isStdoutTerminal() {
+		return md
+	}
+	r, err := markdownRenderer()
+	if err != nil || r == nil {
+		return md
+	}
+	out, err := r.Render(md)
+	if err != nil {
+		return md
+	}
+	return strings.TrimRight(out, "\n")
+}
+
+func isStdoutTerminal() bool {
+	if os.Getenv("STASH_FORCE_MD") != "" {
+		return true
+	}
+	if os.Getenv("STASH_NO_MD") != "" {
+		return false
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
 
 func printJSON(v any) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(v)
+}
+
+// printJSONSlice emits a slice as JSON, normalizing a nil slice to
+// `[]` instead of the default Go-marshaled `null`. Required for any
+// command whose consumers (Mac app, Android app) decode the output
+// as a non-optional array — `null` trips strict decoders.
+func printJSONSlice[T any](items []T) {
+	if items == nil {
+		items = []T{}
+	}
+	printJSON(items)
 }
 
 func printItems(items []model.Item) {
@@ -59,7 +123,16 @@ func printItem(item *model.Item, storePath ...string) {
 		fmt.Printf("URL:         %s\n", item.URL)
 	}
 	if item.Notes != "" {
-		fmt.Printf("Notes:       %s\n", item.Notes)
+		// Render Notes as markdown when stdout is a terminal.
+		// Heuristic: most user notes are markdown-shaped (### Headings,
+		// **bold**, bullet lists) but it doesn't hurt for plain text
+		// either. Set STASH_NO_MD=1 to disable.
+		rendered := renderMarkdown(item.Notes)
+		if strings.Contains(rendered, "\n") {
+			fmt.Printf("Notes:\n%s\n", rendered)
+		} else {
+			fmt.Printf("Notes:       %s\n", rendered)
+		}
 	}
 	if item.MimeType != "" {
 		fmt.Printf("MIME:        %s\n", item.MimeType)

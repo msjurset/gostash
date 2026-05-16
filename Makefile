@@ -38,6 +38,12 @@ release: clean test
 
 deploy: build install-manpage install-completion install-chrome-host
 	cp $(BINARY) ~/.local/bin/
+	@# Ad-hoc sign — macOS Sequoia+ Gatekeeper SIGKILLs unsigned
+	@# binaries from new locations (including ~/.local/bin) on
+	@# every rebuild that changes deps / signature. Without this
+	@# the Mac app's `stash list` subprocess returns no output
+	@# and the items list renders empty.
+	codesign --force --sign - ~/.local/bin/$(BINARY)
 
 install-manpage:
 	install -d /usr/local/share/man/man1

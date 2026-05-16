@@ -122,12 +122,31 @@ func validEventType(t string) bool {
 	return false
 }
 
-// parseLogDuration extends Go's `time.ParseDuration` with day / week
-// suffixes (`d`, `w`) since the activity log is naturally consulted on
-// daily / weekly horizons. Falls back to `time.ParseDuration` for any
-// other suffix (`30m`, `1h`, `2h30m`, etc.).
+// parseLogDuration extends Go's `time.ParseDuration` with day / week /
+// month / year suffixes (`d`, `w`, `mo`, `y`) since stash time
+// windows are naturally calendar-shaped. Months are approximated as
+// 30 days and years as 365 — close enough for "captures in the last
+// month" digests; calendar-precise cutoffs aren't worth the complexity.
+// Falls back to `time.ParseDuration` for any other suffix.
 func parseLogDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
+	// Order matters: check `mo` before `m` (minutes) so "1mo" doesn't
+	// parse as one minute. Year (`y`) before week (`w`) is moot but
+	// kept for symmetry.
+	if strings.HasSuffix(s, "mo") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "mo"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid months value %q", s)
+		}
+		return time.Duration(n) * 30 * 24 * time.Hour, nil
+	}
+	if strings.HasSuffix(s, "y") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "y"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid years value %q", s)
+		}
+		return time.Duration(n) * 365 * 24 * time.Hour, nil
+	}
 	if strings.HasSuffix(s, "d") {
 		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
 		if err != nil {

@@ -88,6 +88,7 @@ func init() {
 	thumbnailImportCmd.Flags().Bool("candidates", false, "Print ranked candidates as JSON; do not persist")
 	thumbnailBackfillCmd.Flags().Int("limit", 0, "Stop after N items (0 = no limit)")
 	thumbnailBackfillCmd.Flags().Bool("dry-run", false, "List candidates without writing thumbnails")
+	thumbnailBackfillCmd.Flags().Bool("images", false, "Backfill image items by downscaling their blobs (instead of URL items)")
 	thumbnailCmd.AddCommand(thumbnailSetCmd)
 	thumbnailCmd.AddCommand(thumbnailImportCmd)
 	thumbnailCmd.AddCommand(thumbnailClearCmd)
@@ -99,6 +100,7 @@ func init() {
 func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
 	limit, _ := cmd.Flags().GetInt("limit")
 	dry, _ := cmd.Flags().GetBool("dry-run")
+	images, _ := cmd.Flags().GetBool("images")
 
 	s, err := openStore()
 	if err != nil {
@@ -107,13 +109,18 @@ func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
 	defer s.Close()
 	ctx := context.Background()
 
-	// Pull URL items. ListItems honors the filter and returns the full
-	// rows; we walk them looking for ones missing a thumbnail. We
-	// don't filter on thumbnail_path at the SQL level because the
-	// filter struct doesn't expose it — the in-memory pass over a
-	// few hundred URL items is fine.
+	filterType := model.TypeURL
+	label := "URL"
+	if images {
+		filterType = model.TypeImage
+		label = "image"
+	}
+
+	// Pull items of the chosen type. ListItems' filter doesn't expose
+	// thumbnail_path so we scan in memory; even a few thousand rows
+	// is trivial.
 	items, err := s.ListItems(ctx, model.ItemFilter{
-		Type:  model.TypeURL,
+		Type:  filterType,
 		Limit: 0,
 	})
 	if err != nil {
@@ -122,35 +129,53 @@ func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
 
 	var todo []model.Item
 	for _, it := range items {
-		if it.ThumbnailPath == "" && it.URL != "" {
+		if it.ThumbnailPath != "" {
+			continue
+		}
+		if images {
+			if it.StorePath != "" {
+				todo = append(todo, it)
+			}
+		} else if it.URL != "" {
 			todo = append(todo, it)
 		}
 	}
 	if len(todo) == 0 {
-		fmt.Println("No URL items missing thumbnails.")
+		fmt.Printf("No %s items missing thumbnails.\n", label)
 		return nil
 	}
 	if limit > 0 && len(todo) > limit {
 		todo = todo[:limit]
 	}
 
-	fmt.Printf("Backfilling thumbnails for %d item%s%s\n",
+	fmt.Printf("Backfilling thumbnails for %d %s item%s%s\n",
 		len(todo),
+		label,
 		map[bool]string{true: "", false: "s"}[len(todo) == 1],
 		map[bool]string{true: " (dry run)", false: ""}[dry],
 	)
 
 	ok, failed := 0, 0
+	fs := openFileStore()
 	for i := range todo {
 		it := &todo[i]
-		fmt.Printf("  [%d/%d] %s %s …", i+1, len(todo), shortID(it.ID), truncate(it.URL, 60))
+		hint := it.URL
+		if images {
+			hint = it.SourcePath
+		}
+		fmt.Printf("  [%d/%d] %s %s …", i+1, len(todo), shortID(it.ID), truncate(hint, 60))
 		if dry {
 			fmt.Println(" (skipped)")
 			continue
 		}
-		_, err := thumbsync.ImportForItem(ctx, s, openFileStore(), it, it.URL)
-		if err != nil {
-			fmt.Printf(" failed (%s)\n", err.Error())
+		var importErr error
+		if images {
+			_, importErr = thumbsync.ImportImageThumbnail(ctx, s, fs, it)
+		} else {
+			_, importErr = thumbsync.ImportForItem(ctx, s, fs, it, it.URL)
+		}
+		if importErr != nil {
+			fmt.Printf(" failed (%s)\n", importErr.Error())
 			failed++
 			continue
 		}

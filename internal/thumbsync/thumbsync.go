@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	_ "image/png"
 	"io"
 	"net/http"
@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
 	"github.com/msjurset/gostash/internal/extract"
@@ -29,6 +30,13 @@ import (
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
 )
+
+// MaxThumbnailDim is the target long-edge size for generated
+// thumbnails from image-blob uploads. Picked so the resulting JPEG
+// is small enough for cellular thumbnail loads (10-50 KB typical)
+// while still readable at the Browse-row sizes the Mac and Android
+// apps render.
+const MaxThumbnailDim = 512
 
 // minThumbnailDim is the floor for an "actual" thumbnail. Anything
 // smaller than this on either dimension is rejected as a tracking
@@ -142,6 +150,87 @@ func ImportForItem(
 		return ImportResult{}, fmt.Errorf("no thumbnail candidates found at %s (all rejected as too small)", fromURL)
 	}
 	return ImportResult{}, fmt.Errorf("could not fetch any candidate (last: %v)", lastErr)
+}
+
+// GenerateImageThumbnail decodes the image bytes from `src`, scales
+// the result to fit within MaxThumbnailDim on the long edge while
+// preserving aspect ratio, and re-encodes as JPEG (quality 85).
+// Used at multipart-capture time so mobile-captured photos don't
+// ship full-resolution blobs as their thumbnail.
+//
+// Skips the scale-up case: images already smaller than the target
+// pass through their dimensions unchanged (still re-encoded as JPEG
+// for consistency).
+//
+// Returns the encoded bytes and the file extension to use (".jpg").
+func GenerateImageThumbnail(src io.Reader) ([]byte, string, error) {
+	img, _, err := image.Decode(src)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode: %w", err)
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return nil, "", fmt.Errorf("empty image")
+	}
+	scale := 1.0
+	long := w
+	if h > w {
+		long = h
+	}
+	if long > MaxThumbnailDim {
+		scale = float64(MaxThumbnailDim) / float64(long)
+	}
+	dstW := int(float64(w) * scale)
+	dstH := int(float64(h) * scale)
+	if dstW <= 0 {
+		dstW = 1
+	}
+	if dstH <= 0 {
+		dstH = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	// CatmullRom = high-quality bicubic. For ~12 MP → 512 px the
+	// extra cost over BiLinear is negligible (single-digit ms) and
+	// the result reads notably crisper on small list rows.
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+
+	buf := new(bytes.Buffer)
+	if err := jpeg.Encode(buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, "", fmt.Errorf("encode jpeg: %w", err)
+	}
+	return buf.Bytes(), ".jpg", nil
+}
+
+// ImportImageThumbnail generates and persists a downscaled thumbnail
+// for an image item whose blob already lives in the filestore. The
+// blob is read from disk via `fs.Path(item.StorePath)`, downscaled,
+// and written under `thumbnails/<id>.jpg`. The item's thumbnail_path
+// column is updated in the same transaction. Idempotent — re-running
+// replaces the existing thumbnail.
+func ImportImageThumbnail(
+	ctx context.Context,
+	s store.Store,
+	fs *filestore.FileStore,
+	item *model.Item,
+) (string, error) {
+	if item.StorePath == "" {
+		return "", fmt.Errorf("item %s has no blob", item.ID)
+	}
+	abs := fs.Path(item.StorePath)
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("blob missing: %w", err)
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return "", fmt.Errorf("open blob: %w", err)
+	}
+	defer f.Close()
+	thumb, ext, err := GenerateImageThumbnail(f)
+	if err != nil {
+		return "", err
+	}
+	return writeThumbnail(ctx, s, fs, item, bytes.NewReader(thumb), ext)
 }
 
 // DownloadImage fetches a remote URL and returns its extension

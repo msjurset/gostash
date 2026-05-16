@@ -191,6 +191,19 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// For image uploads, generate a small JPEG thumbnail from the
+	// stored blob and persist it under thumbnail_path. Async so the
+	// upload response doesn't wait on the resize. Without this the
+	// thumbnail-handler fallback serves the full blob — fine for
+	// correctness, brutal for cellular bandwidth on phone photos.
+	if item.Type == model.TypeImage {
+		go func(it model.Item) {
+			ctx := context.Background()
+			if _, err := thumbsync.ImportImageThumbnail(ctx, s.Store, s.Files, &it); err != nil {
+				log.Printf("auto-image-thumbnail %s: %v", it.ID, err)
+			}
+		}(*item)
+	}
 	writeJSON(w, http.StatusCreated, item)
 }
 

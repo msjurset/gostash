@@ -234,22 +234,35 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /items/{id}/thumbnail
+//
+// Resolution order:
+//  1. If `thumbnail_path` is set, serve that file (the proper
+//     extracted thumbnail).
+//  2. If the item is an image and has a content blob, serve the
+//     full blob as a fallback — clients downscale on display. The
+//     bandwidth hit beats showing no thumbnail at all for items
+//     captured from the phone or directly added without a thumbnail
+//     extraction step.
+//  3. Otherwise 404.
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	item, err := s.Store.GetItem(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if item.ThumbnailPath == "" {
-		writeError(w, http.StatusNotFound, "no thumbnail")
-		return
+	if item.ThumbnailPath != "" {
+		if abs := s.Files.ResolveRelative(item.ThumbnailPath); abs != "" {
+			http.ServeFile(w, r, abs)
+			return
+		}
 	}
-	abs := s.Files.ResolveRelative(item.ThumbnailPath)
-	if abs == "" {
-		writeError(w, http.StatusNotFound, "no thumbnail")
-		return
+	if item.Type == model.TypeImage && item.StorePath != "" {
+		if s.Files.Exists(item.StorePath) {
+			http.ServeFile(w, r, s.Files.Path(item.StorePath))
+			return
+		}
 	}
-	http.ServeFile(w, r, abs)
+	writeError(w, http.StatusNotFound, "no thumbnail")
 }
 
 type tagsBody struct {

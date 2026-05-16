@@ -63,6 +63,21 @@ var thumbnailPathCmd = &cobra.Command{
 	RunE:  runThumbnailPath,
 }
 
+var thumbnailBackfillCmd = &cobra.Command{
+	Use:   "backfill",
+	Short: "Import thumbnails for every URL item missing one",
+	Long: `Scan all URL-type items whose thumbnail_path is empty and run the
+same fetch + extract pipeline as 'stash thumbnail import' against each
+one. Use after capturing URLs from the browser extension or the HTTP
+serve /capture endpoint, neither of which currently extracts thumbnails
+at capture time.
+
+Failures (404s, paywalls, no candidate images) don't abort the run —
+they're counted and reported at the end. Safe to re-run; items that
+got a thumbnail in a prior run are skipped.`,
+	RunE: runThumbnailBackfill,
+}
+
 var thumbnailImportCmd = &cobra.Command{
 	Use:   "import <id>",
 	Short: "Fetch a URL and import its best thumbnail candidate",
@@ -88,11 +103,79 @@ func init() {
 	thumbnailSetCmd.Flags().String("url", "", "Remote image URL to download")
 	thumbnailImportCmd.Flags().String("from", "", "Source URL (defaults to item.url)")
 	thumbnailImportCmd.Flags().Bool("candidates", false, "Print ranked candidates as JSON; do not persist")
+	thumbnailBackfillCmd.Flags().Int("limit", 0, "Stop after N items (0 = no limit)")
+	thumbnailBackfillCmd.Flags().Bool("dry-run", false, "List candidates without writing thumbnails")
 	thumbnailCmd.AddCommand(thumbnailSetCmd)
 	thumbnailCmd.AddCommand(thumbnailImportCmd)
 	thumbnailCmd.AddCommand(thumbnailClearCmd)
 	thumbnailCmd.AddCommand(thumbnailPathCmd)
+	thumbnailCmd.AddCommand(thumbnailBackfillCmd)
 	rootCmd.AddCommand(thumbnailCmd)
+}
+
+func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
+	limit, _ := cmd.Flags().GetInt("limit")
+	dry, _ := cmd.Flags().GetBool("dry-run")
+
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Pull URL items. ListItems honors the filter and returns the full
+	// rows; we walk them looking for ones missing a thumbnail. We
+	// don't filter on thumbnail_path at the SQL level because the
+	// filter struct doesn't expose it — the in-memory pass over a
+	// few hundred URL items is fine.
+	items, err := s.ListItems(ctx, model.ItemFilter{
+		Type:  model.TypeURL,
+		Limit: 0,
+	})
+	if err != nil {
+		return fmt.Errorf("list items: %w", err)
+	}
+
+	var todo []model.Item
+	for _, it := range items {
+		if it.ThumbnailPath == "" && it.URL != "" {
+			todo = append(todo, it)
+		}
+	}
+	if len(todo) == 0 {
+		fmt.Println("No URL items missing thumbnails.")
+		return nil
+	}
+	if limit > 0 && len(todo) > limit {
+		todo = todo[:limit]
+	}
+
+	fmt.Printf("Backfilling thumbnails for %d item%s%s\n",
+		len(todo),
+		map[bool]string{true: "", false: "s"}[len(todo) == 1],
+		map[bool]string{true: " (dry run)", false: ""}[dry],
+	)
+
+	ok, failed := 0, 0
+	for i := range todo {
+		it := &todo[i]
+		fmt.Printf("  [%d/%d] %s %s …", i+1, len(todo), shortID(it.ID), truncate(it.URL, 60))
+		if dry {
+			fmt.Println(" (skipped)")
+			continue
+		}
+		_, err := importThumbnailForItem(s, it, it.URL)
+		if err != nil {
+			fmt.Printf(" failed (%s)\n", err.Error())
+			failed++
+			continue
+		}
+		fmt.Println(" ok")
+		ok++
+	}
+	fmt.Printf("Done. %d succeeded, %d failed.\n", ok, failed)
+	return nil
 }
 
 func runThumbnailSet(cmd *cobra.Command, args []string) error {

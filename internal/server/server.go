@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/msjurset/gostash/internal/filestore"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
+	"github.com/msjurset/gostash/internal/thumbsync"
 )
 
 // Server wires the HTTP API to a Store + FileStore. The struct is
@@ -113,6 +115,21 @@ func (s *Server) handleCaptureJSON(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.CreateItem(r.Context(), item); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// URL captures from the browser extension / mobile share / any
+	// HTTP client don't carry a thumbnail — kick the extraction
+	// pipeline asynchronously so the user doesn't have to remember
+	// `stash thumbnail backfill`. Best-effort: failures are logged
+	// but don't surface in the capture response. Uses a fresh
+	// background context so the request's cancellation doesn't
+	// abort the work mid-fetch.
+	if item.Type == model.TypeURL && item.URL != "" {
+		go func(it model.Item) {
+			ctx := context.Background()
+			if _, err := thumbsync.ImportForItem(ctx, s.Store, s.Files, &it, it.URL); err != nil {
+				log.Printf("auto-thumbnail %s: %v", it.ID, err)
+			}
+		}(*item)
 	}
 	writeJSON(w, http.StatusCreated, item)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/rules"
 	"github.com/msjurset/gostash/internal/store"
+	"github.com/msjurset/gostash/internal/thumbsync"
 )
 
 // RuleApplyContext carries the user's explicit-input flags into the rules
@@ -160,7 +161,7 @@ func applyThumbnailAction(s store.Store, item *model.Item, spec rules.ThumbnailS
 		// No source resolved (e.g., `auto` on a snippet) — skip.
 		return
 	}
-	if _, err := importThumbnailForItem(s, item, fromURL); err != nil {
+	if _, err := thumbsync.ImportForItem(context.Background(), s, openFileStore(), item, fromURL); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: rules set_thumbnail: %v\n", err)
 	}
 }

@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /items/{id}/thumbnail", s.handleThumbnail)
 	mux.HandleFunc("POST /items/{id}/tags", s.handleAddTags)
 	mux.HandleFunc("DELETE /items/{id}/tags/{tag}", s.handleRemoveTag)
+	mux.HandleFunc("PATCH /items/{id}", s.handlePatchItem)
 	mux.HandleFunc("DELETE /items/{id}", s.handleDeleteItem)
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /tags", s.handleListTags)
@@ -207,6 +208,85 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+// patchItemBody mirrors a sparse Mac edit form. Pointer fields are
+// used so we can distinguish "absent" (don't touch) from "present
+// and empty" (clear). For tags / collection, sending the explicit
+// list replaces the existing set; omitting the field leaves the
+// existing set alone.
+type patchItemBody struct {
+	Title      *string   `json:"title,omitempty"`
+	Notes      *string   `json:"notes,omitempty"`
+	URL        *string   `json:"url,omitempty"`
+	Tags       *[]string `json:"tags,omitempty"`
+	Collection *string   `json:"collection,omitempty"`
+}
+
+// PATCH /items/{id} — partial update of an item's metadata.
+// All fields optional; only ones present in the request body are
+// touched. Tags, when provided, replace the existing tag set.
+func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body patchItemBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	item, err := s.Store.GetItem(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if body.Title != nil {
+		item.Title = strings.TrimSpace(*body.Title)
+	}
+	if body.Notes != nil {
+		item.Notes = *body.Notes
+	}
+	if body.URL != nil {
+		item.URL = strings.TrimSpace(*body.URL)
+	}
+	if body.Tags != nil {
+		// Build []model.Tag from the supplied names. UpdateItem's
+		// setTags handles add/remove diffing against the existing
+		// associations.
+		newTags := make([]model.Tag, 0, len(*body.Tags))
+		seen := make(map[string]bool)
+		for _, raw := range *body.Tags {
+			t := strings.TrimSpace(raw)
+			if t == "" || seen[strings.ToLower(t)] {
+				continue
+			}
+			seen[strings.ToLower(t)] = true
+			newTags = append(newTags, model.Tag{Name: t})
+		}
+		item.Tags = newTags
+	}
+
+	if err := s.Store.UpdateItem(r.Context(), item); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Collection updates aren't supported by UpdateItem's signature
+	// directly — they live on a separate association table. The Mac
+	// CLI handles them via dedicated AddCollection / RemoveCollection
+	// calls. Defer collection editing to a follow-up that surfaces
+	// the same primitives over HTTP.
+	_ = body.Collection
+
+	// Re-fetch so the response reflects the canonical row (timestamps,
+	// resolved tag IDs, etc.) instead of the partially-mutated copy.
+	fresh, err := s.Store.GetItem(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fresh)
 }
 
 // GET /items/{id}/blob — the full content bytes for image / file items.

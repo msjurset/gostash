@@ -47,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /tags", s.handleListTags)
 	mux.HandleFunc("GET /collections", s.handleListCollections)
+	mux.HandleFunc("GET /stats", s.handleStats)
 	// Multi-file items — attached photos beyond the primary
 	// store_path. Backed by the same Store methods the CLI uses.
 	mux.HandleFunc("GET /items/{id}/files", s.handleListItemFiles)
@@ -340,12 +341,53 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collection updates aren't supported by UpdateItem's signature
-	// directly — they live on a separate association table. The Mac
-	// CLI handles them via dedicated AddCollection / RemoveCollection
-	// calls. Defer collection editing to a follow-up that surfaces
-	// the same primitives over HTTP.
-	_ = body.Collection
+	// Collection updates go through dedicated add / remove primitives
+	// since they live on an association table, not on items.* columns.
+	// Body shape: nil → no change; "" → clear (remove from every
+	// current collection); non-empty → ensure the item is in that
+	// collection (creates the collection if needed via AddCollection)
+	// AND removes it from any other collections it was in.
+	if body.Collection != nil {
+		desired := strings.TrimSpace(*body.Collection)
+		// Read current collection memberships from the post-update
+		// row so we diff against authoritative state.
+		afterTags, err := s.Store.GetItem(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		currentNames := make([]string, 0, len(afterTags.Collections))
+		for _, c := range afterTags.Collections {
+			currentNames = append(currentNames, c.Name)
+		}
+		// Remove any that don't match the desired value.
+		for _, name := range currentNames {
+			if !strings.EqualFold(name, desired) {
+				if err := s.Store.RemoveFromCollection(r.Context(), id, name); err != nil {
+					writeError(w, http.StatusInternalServerError,
+						"remove from collection: "+err.Error())
+					return
+				}
+			}
+		}
+		// Add the new one (unless caller asked to clear).
+		if desired != "" {
+			alreadyIn := false
+			for _, name := range currentNames {
+				if strings.EqualFold(name, desired) {
+					alreadyIn = true
+					break
+				}
+			}
+			if !alreadyIn {
+				if err := s.Store.AddToCollection(r.Context(), id, desired); err != nil {
+					writeError(w, http.StatusInternalServerError,
+						"add to collection: "+err.Error())
+					return
+				}
+			}
+		}
+	}
 
 	// Re-fetch so the response reflects the canonical row (timestamps,
 	// resolved tag IDs, etc.) instead of the partially-mutated copy.
@@ -506,6 +548,19 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cols)
+}
+
+// GET /stats — same shape as `stash stats --json`. Powers the
+// Android Settings "synced items on the Mac: X" panel and any
+// future client that wants a single small round-trip for "how
+// big is the library on the server."
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.Store.Stats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // ───────────────────────────────────────────────────────────

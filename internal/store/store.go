@@ -112,6 +112,20 @@ type Store interface {
 	DismissResurface(ctx context.Context, itemID string, now time.Time) error
 	SnoozeResurface(ctx context.Context, itemID string, until time.Time) error
 
+	// Item files — additional attached photos beyond items.store_path.
+	// The primary file remains on items.store_path so existing reads
+	// keep working; rows here accumulate when the user attaches
+	// further angles / states of the same subject (mushroom top /
+	// side / bottom, bird male / female, etc).
+	AttachItemFile(ctx context.Context, file *model.ItemFile) error
+	DetachItemFile(ctx context.Context, fileID int64) error
+	ListItemFiles(ctx context.Context, itemID string) ([]model.ItemFile, error)
+	ReorderItemFiles(ctx context.Context, itemID string, orderedIDs []int64) error
+	PromoteItemFile(ctx context.Context, fileID int64) error
+	// Merge sources' files + tags + notes into target. Sources are
+	// deleted on success. Returns the updated target item.
+	MergeItems(ctx context.Context, targetID string, sourceIDs []string) (*model.Item, error)
+
 	Checkpoint() error
 	Close() error
 }

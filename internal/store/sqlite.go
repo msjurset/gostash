@@ -101,8 +101,40 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemLocation(); err != nil {
 		return fmt.Errorf("migrate items.location: %w", err)
 	}
+	if err := s.migrateItemFiles(); err != nil {
+		return fmt.Errorf("migrate item_files: %w", err)
+	}
 
 	return nil
+}
+
+// migrateItemFiles introduces the item_files sidecar table that
+// holds additional attached photos beyond the primary store_path.
+// items.store_path remains the cover so existing read paths work
+// unchanged; rows in item_files accumulate only when the user
+// attaches extra angles / states of the same subject. Idempotent.
+func (s *SQLiteStore) migrateItemFiles() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS item_files (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			item_id       TEXT    NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+			store_path    TEXT    NOT NULL,
+			content_hash  TEXT    NOT NULL,
+			mime_type     TEXT    NOT NULL DEFAULT '',
+			file_size     INTEGER NOT NULL DEFAULT 0,
+			caption       TEXT    NOT NULL DEFAULT '',
+			position      INTEGER NOT NULL DEFAULT 0,
+			created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(item_id, content_hash)
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_item_files_item ON item_files(item_id, position)`,
+	)
+	return err
 }
 
 // migrateItemLocation adds the latitude/longitude/location_source
@@ -1098,6 +1130,18 @@ func (s *SQLiteStore) loadRelations(ctx context.Context, item *model.Item) error
 		return err
 	}
 	item.Links = links
+
+	// Load attached files (item_files sidecar). Items with no
+	// attachments get nil/empty here — JSON omitempty hides the
+	// field entirely so existing consumers don't see `"files": []`
+	// noise on every single-file item.
+	files, err := s.ListItemFiles(ctx, item.ID)
+	if err != nil {
+		return fmt.Errorf("load item_files: %w", err)
+	}
+	if len(files) > 0 {
+		item.Files = files
+	}
 	return nil
 }
 

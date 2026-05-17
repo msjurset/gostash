@@ -55,6 +55,27 @@ type Item struct {
 	Tags          []Tag           `json:"tags,omitempty"`
 	Collections   []Collection    `json:"collections,omitempty"`
 	Links         []Link          `json:"links,omitempty"`
+	Files         []ItemFile      `json:"files,omitempty"`
+}
+
+// ItemFile is an additional photo / file attached to an item beyond
+// its primary store_path. Items default to single-file (zero rows
+// in the item_files table); rows accumulate when the user attaches
+// extra angles / states of the same subject (mushroom top/side/
+// bottom, bird male/female, etc).
+//
+// The primary file stays on items.store_path so every existing
+// read path keeps working unchanged.
+type ItemFile struct {
+	ID          int64     `json:"id"`
+	ItemID      string    `json:"item_id"`
+	StorePath   string    `json:"store_path"`
+	ContentHash string    `json:"content_hash"`
+	MimeType    string    `json:"mime_type,omitempty"`
+	FileSize    int64     `json:"file_size,omitempty"`
+	Caption     string    `json:"caption,omitempty"`
+	Position    int       `json:"position"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Location is geo-coordinates attached to an item. Populated

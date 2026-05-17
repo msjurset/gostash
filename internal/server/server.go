@@ -188,11 +188,27 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 		item.Title = firstNonEmpty(header.Filename, "Upload")
 	}
 
-	// EXIF GPS — image-only, best-effort. Decode errors and ErrNoGPS
-	// are silent skips: the upload still succeeds, just without a
-	// location attached. Reads from the already-buffered request body
-	// so no extra disk hop.
-	if item.Type == model.TypeImage {
+	// Location resolution order, highest precedence first:
+	//   1. client-sent latitude/longitude form parts (source=capture)
+	//   2. JPEG EXIF GPS (source=exif)
+	//
+	// The mobile client's OS Location API runs at the moment the
+	// user takes / shares the photo, whereas EXIF is whatever the
+	// camera stamped earlier (or nothing, if the share sheet
+	// stripped it). Prefer the live capture value.
+	if latStr, lonStr := r.FormValue("latitude"), r.FormValue("longitude"); latStr != "" && lonStr != "" {
+		if lat, errA := strconv.ParseFloat(latStr, 64); errA == nil {
+			if lon, errB := strconv.ParseFloat(lonStr, 64); errB == nil {
+				if lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 {
+					item.Location = &model.Location{
+						Lat: lat, Lon: lon, Source: "capture",
+					}
+				}
+			}
+		}
+	}
+	if item.Location == nil && item.Type == model.TypeImage {
+		// Fall back to EXIF — best-effort, ErrNoGPS silently skips.
 		if lat, lon, gpsErr := exif.ExtractGPS(bytes.NewReader(buf.Bytes())); gpsErr == nil {
 			item.Location = &model.Location{
 				Lat: lat, Lon: lon, Source: "exif",

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/msjurset/gostash/internal/exif"
@@ -192,26 +191,65 @@ type backfillOutcome struct {
 }
 
 func backfillOne(ctx context.Context, s store.Store, fs *filestore.FileStore, item model.Item) (backfillOutcome, error) {
-	f, err := fs.Open(item.ContentHash)
-	if err != nil {
-		return backfillOutcome{}, fmt.Errorf("open blob: %w", err)
-	}
-	defer f.Close()
-
-	lat, lon, gpsErr := exif.ExtractGPS(f)
-	if gpsErr != nil {
-		if errors.Is(gpsErr, exif.ErrNoGPS) {
-			return backfillOutcome{kind: backfillKindNoGPS}, nil
+	// Try the primary blob first, then walk attached files in
+	// item_files order. A multi-file item (e.g. a flower whose
+	// primary shot got share-stripped of EXIF but whose stem /
+	// leaves shots came straight from the camera) would otherwise
+	// stay locationless even though the data is right there in one
+	// of the attachments.
+	hashes := []string{item.ContentHash}
+	if len(item.Files) > 0 {
+		// Load attached files via the store directly — item.Files
+		// is populated by GetItem but in case the caller passed a
+		// list-derived Item where Files may not be hydrated, this
+		// also covers the all-items code path.
+		hashes = append(hashes, attachedHashes(item)...)
+	} else {
+		extra, err := s.ListItemFiles(ctx, item.ID)
+		if err == nil {
+			for _, f := range extra {
+				if f.ContentHash != "" {
+					hashes = append(hashes, f.ContentHash)
+				}
+			}
 		}
-		// Non-GPS decode errors (truncated file, unsupported format,
-		// etc.) also reduce to "no usable GPS" — the backfill is
-		// best-effort and skipping is the correct behaviour.
-		return backfillOutcome{kind: backfillKindNoGPS}, nil
 	}
 
-	item.Location = &model.Location{Lat: lat, Lon: lon, Source: "exif"}
-	if err := s.UpdateItem(ctx, &item); err != nil {
-		return backfillOutcome{}, fmt.Errorf("update: %w", err)
+	for i, hash := range hashes {
+		if hash == "" {
+			continue
+		}
+		f, err := fs.Open(hash)
+		if err != nil {
+			// Missing blob isn't fatal — log only on the primary
+			// since attached blobs may have been pruned.
+			if i == 0 {
+				return backfillOutcome{}, fmt.Errorf("open primary blob: %w", err)
+			}
+			continue
+		}
+		lat, lon, gpsErr := exif.ExtractGPS(f)
+		f.Close()
+		if gpsErr != nil {
+			// Try the next blob — ErrNoGPS / decode errors both
+			// reduce to "this file doesn't help, try the next."
+			continue
+		}
+		item.Location = &model.Location{Lat: lat, Lon: lon, Source: "exif"}
+		if err := s.UpdateItem(ctx, &item); err != nil {
+			return backfillOutcome{}, fmt.Errorf("update: %w", err)
+		}
+		return backfillOutcome{kind: backfillKindUpdated, lat: lat, lon: lon}, nil
 	}
-	return backfillOutcome{kind: backfillKindUpdated, lat: lat, lon: lon}, nil
+	return backfillOutcome{kind: backfillKindNoGPS}, nil
+}
+
+func attachedHashes(item model.Item) []string {
+	out := make([]string, 0, len(item.Files))
+	for _, f := range item.Files {
+		if f.ContentHash != "" {
+			out = append(out, f.ContentHash)
+		}
+	}
+	return out
 }

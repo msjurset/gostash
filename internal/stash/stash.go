@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/exif"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/model"
 
@@ -276,6 +277,20 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 			if result.Title != "" && item.Title == "" {
 				item.Title = result.Title
 			}
+		}
+	}
+
+	// EXIF GPS — image-only, best-effort. Re-open so we don't fight
+	// the extractor's reader position. ErrNoGPS / decode errors are
+	// silent skips: most non-phone images simply don't have a fix.
+	if item.Type == model.TypeImage {
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if lat, lon, gpsErr := exif.ExtractGPS(exifFile); gpsErr == nil {
+				item.Location = &model.Location{
+					Lat: lat, Lon: lon, Source: "exif",
+				}
+			}
+			exifFile.Close()
 		}
 	}
 

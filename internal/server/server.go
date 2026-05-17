@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/exif"
 	"github.com/msjurset/gostash/internal/filestore"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
@@ -185,6 +186,18 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 	item.MimeType = mime
 	if item.Title == "" {
 		item.Title = firstNonEmpty(header.Filename, "Upload")
+	}
+
+	// EXIF GPS — image-only, best-effort. Decode errors and ErrNoGPS
+	// are silent skips: the upload still succeeds, just without a
+	// location attached. Reads from the already-buffered request body
+	// so no extra disk hop.
+	if item.Type == model.TypeImage {
+		if lat, lon, gpsErr := exif.ExtractGPS(bytes.NewReader(buf.Bytes())); gpsErr == nil {
+			item.Location = &model.Location{
+				Lat: lat, Lon: lon, Source: "exif",
+			}
+		}
 	}
 
 	if err := s.Store.CreateItem(r.Context(), item); err != nil {

@@ -98,8 +98,39 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateFeedSourceFetchContent(); err != nil {
 		return fmt.Errorf("migrate feed_sources.fetch_content: %w", err)
 	}
+	if err := s.migrateItemLocation(); err != nil {
+		return fmt.Errorf("migrate items.location: %w", err)
+	}
 
 	return nil
+}
+
+// migrateItemLocation adds the latitude/longitude/location_source
+// columns that back model.Item.Location. Populated automatically
+// from JPEG EXIF on image capture, on mobile location-API capture,
+// or set manually via `stash edit --location`. NULL latitude is the
+// "no location" sentinel (so existing rows pre-migration are
+// indistinguishable from genuinely-locationless items). Partial
+// index on (lat, lon) so `WHERE latitude IS NOT NULL` queries stay
+// cheap as the items table grows. Idempotent.
+func (s *SQLiteStore) migrateItemLocation() error {
+	if err := s.addColumnIfMissing("items", "latitude",
+		`ALTER TABLE items ADD COLUMN latitude REAL`); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("items", "longitude",
+		`ALTER TABLE items ADD COLUMN longitude REAL`); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("items", "location_source",
+		`ALTER TABLE items ADD COLUMN location_source TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_items_location
+		 ON items(latitude, longitude) WHERE latitude IS NOT NULL`,
+	)
+	return err
 }
 
 // migrateFeedSourceFetchContent adds the `fetch_content` opt-in flag.
@@ -301,14 +332,16 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 		return err
 	}
 
+	lat, lon, locSrc := splitLocation(item.Location)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO items (id, type, title, url, notes, source_path, store_path,
 			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at,
-			thumbnail_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			thumbnail_path, latitude, longitude, location_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
 		item.FileSize, meta, item.CreatedAt, item.UpdatedAt, item.ThumbnailPath,
+		lat, lon, locSrc,
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -517,14 +550,16 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 
 	item.UpdatedAt = time.Now().UTC()
 
+	lat, lon, locSrc := splitLocation(item.Location)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
-			thumbnail_path=?
+			thumbnail_path=?, latitude=?, longitude=?, location_source=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
-		meta, item.UpdatedAt, item.ThumbnailPath, item.ID,
+		meta, item.UpdatedAt, item.ThumbnailPath,
+		lat, lon, locSrc, item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)
@@ -927,17 +962,21 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	var item model.Item
 	var meta string
 	var archived int
+	var lat, lon sql.NullFloat64
+	var locSrc sql.NullString
 	err := row.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 		&archived, &item.ThumbnailPath,
+		&lat, &lon, &locSrc,
 	)
 	if err != nil {
 		return nil, err
 	}
 	item.Metadata = json.RawMessage(meta)
 	item.Archived = archived != 0
+	item.Location = buildLocation(lat, lon, locSrc)
 	return &item, nil
 }
 
@@ -947,20 +986,49 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		var item model.Item
 		var meta string
 		var archived int
+		var lat, lon sql.NullFloat64
+		var locSrc sql.NullString
 		err := rows.Scan(
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 			&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 			&archived, &item.ThumbnailPath,
+			&lat, &lon, &locSrc,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		item.Metadata = json.RawMessage(meta)
 		item.Archived = archived != 0
+		item.Location = buildLocation(lat, lon, locSrc)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// splitLocation flattens a *Location into the three SQL parameters
+// the items table stores. nil location maps to (NULL, NULL, "").
+func splitLocation(loc *model.Location) (lat, lon sql.NullFloat64, src string) {
+	if loc == nil {
+		return sql.NullFloat64{}, sql.NullFloat64{}, ""
+	}
+	return sql.NullFloat64{Float64: loc.Lat, Valid: true},
+		sql.NullFloat64{Float64: loc.Lon, Valid: true},
+		loc.Source
+}
+
+// buildLocation is the inverse — nil latitude (NULL in SQL) is the
+// sentinel for "no location" so the item gets a nil Location pointer
+// and the JSON encoder omits the field entirely.
+func buildLocation(lat, lon sql.NullFloat64, src sql.NullString) *model.Location {
+	if !lat.Valid {
+		return nil
+	}
+	return &model.Location{
+		Lat:    lat.Float64,
+		Lon:    lon.Float64,
+		Source: src.String,
+	}
 }
 
 func (s *SQLiteStore) queryItems(ctx context.Context, q string, args []any) ([]model.Item, error) {

@@ -727,3 +727,69 @@ func TestListItemsFilterByTag(t *testing.T) {
 		t.Errorf("got %d items, want 1", len(items))
 	}
 }
+
+func TestCreateItemRoundTripsLocation(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	item := testItem("01LOC", model.TypeImage)
+	item.Location = &model.Location{Lat: 33.7544777, Lon: -84.6272805, Source: "exif"}
+	if err := s.CreateItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := s.GetItem(ctx, "01LOC")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Location == nil {
+		t.Fatalf("Location = nil, want non-nil")
+	}
+	if got.Location.Lat != 33.7544777 || got.Location.Lon != -84.6272805 {
+		t.Errorf("Location = %+v, want lat=33.7544777 lon=-84.6272805", got.Location)
+	}
+	if got.Location.Source != "exif" {
+		t.Errorf("Location.Source = %q, want %q", got.Location.Source, "exif")
+	}
+}
+
+func TestUpdateItemClearsLocation(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	item := testItem("01CLR", model.TypeImage)
+	item.Location = &model.Location{Lat: 1, Lon: 2, Source: "manual"}
+	if err := s.CreateItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	item.Location = nil
+	if err := s.UpdateItem(ctx, item); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := s.GetItem(ctx, "01CLR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Location != nil {
+		t.Errorf("Location = %+v, want nil after clear", got.Location)
+	}
+}
+
+func TestItemWithoutLocationStaysNil(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	item := testItem("01NIL", model.TypeImage)
+	if err := s.CreateItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetItem(ctx, "01NIL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Location != nil {
+		t.Errorf("Location = %+v, want nil for image without GPS", got.Location)
+	}
+}

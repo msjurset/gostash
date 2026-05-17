@@ -51,9 +51,22 @@ type Item struct {
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
 	Archived      bool            `json:"archived,omitempty"`
+	Location      *Location       `json:"location,omitempty"`
 	Tags          []Tag           `json:"tags,omitempty"`
 	Collections   []Collection    `json:"collections,omitempty"`
 	Links         []Link          `json:"links,omitempty"`
+}
+
+// Location is geo-coordinates attached to an item. Populated
+// automatically from JPEG EXIF on image capture (Source="exif"),
+// from the OS Location API on mobile capture (Source="capture"),
+// or set manually via `stash edit --location lat,lon`
+// (Source="manual"). Source dictates override priority during
+// re-processing: manual > capture > exif.
+type Location struct {
+	Lat    float64 `json:"lat"`
+	Lon    float64 `json:"lon"`
+	Source string  `json:"source,omitempty"`
 }
 
 // Tag is a label applied to items.

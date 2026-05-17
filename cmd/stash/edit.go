@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/msjurset/gostash/internal/audit"
+	"github.com/msjurset/gostash/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +26,8 @@ func init() {
 	editCmd.Flags().StringSlice("add-tag", nil, "Add tags (repeatable)")
 	editCmd.Flags().StringSlice("remove-tag", nil, "Remove tags (repeatable)")
 	editCmd.Flags().StringP("collection", "c", "", "Add to collection")
+	editCmd.Flags().String("location", "", "Set geolocation as 'lat,lon' (decimal degrees); sets source=manual")
+	editCmd.Flags().Bool("clear-location", false, "Remove the item's stored location")
 	rootCmd.AddCommand(editCmd)
 }
 
@@ -52,6 +57,20 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("url") {
 		item.URL, _ = cmd.Flags().GetString("url")
+	}
+	if cmd.Flags().Changed("clear-location") {
+		clear, _ := cmd.Flags().GetBool("clear-location")
+		if clear {
+			item.Location = nil
+		}
+	}
+	if cmd.Flags().Changed("location") {
+		raw, _ := cmd.Flags().GetString("location")
+		loc, err := parseLocationFlag(raw)
+		if err != nil {
+			return err
+		}
+		item.Location = loc
 	}
 
 	if err := s.UpdateItem(ctx, item); err != nil {
@@ -97,4 +116,35 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Updated [%s] %s\n", shortID(item.ID), item.Title)
 	}
 	return nil
+}
+
+// parseLocationFlag accepts "lat,lon" (decimal degrees) and returns
+// a *Location with Source="manual". Leading/trailing whitespace and
+// a surrounding pair of parens are tolerated so users can paste
+// "(33.7547, -84.6322)" or "33.7547,-84.6322". Out-of-range or
+// non-numeric components are surfaced as errors so a typo doesn't
+// silently corrupt the record.
+func parseLocationFlag(raw string) (*model.Location, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "(")
+	s = strings.TrimSuffix(s, ")")
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("--location: expected 'lat,lon', got %q", raw)
+	}
+	lat, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return nil, fmt.Errorf("--location: bad latitude %q: %w", parts[0], err)
+	}
+	lon, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return nil, fmt.Errorf("--location: bad longitude %q: %w", parts[1], err)
+	}
+	if lat < -90 || lat > 90 {
+		return nil, fmt.Errorf("--location: latitude %v out of range [-90, 90]", lat)
+	}
+	if lon < -180 || lon > 180 {
+		return nil, fmt.Errorf("--location: longitude %v out of range [-180, 180]", lon)
+	}
+	return &model.Location{Lat: lat, Lon: lon, Source: "manual"}, nil
 }

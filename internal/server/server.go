@@ -47,6 +47,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /tags", s.handleListTags)
 	mux.HandleFunc("GET /collections", s.handleListCollections)
+	// Multi-file items — attached photos beyond the primary
+	// store_path. Backed by the same Store methods the CLI uses.
+	mux.HandleFunc("GET /items/{id}/files", s.handleListItemFiles)
+	mux.HandleFunc("POST /items/{id}/files", s.handleAttachItemFile)
+	mux.HandleFunc("DELETE /items/{id}/files/{fid}", s.handleDetachItemFile)
+	mux.HandleFunc("POST /items/{id}/files/reorder", s.handleReorderItemFiles)
+	mux.HandleFunc("POST /items/{id}/files/{fid}/primary", s.handlePromoteItemFile)
+	mux.HandleFunc("GET /items/{id}/files/{fid}/blob", s.handleItemFileBlob)
+	mux.HandleFunc("POST /items/merge", s.handleMergeItems)
 	return requireBearer(s.Token, mux)
 }
 

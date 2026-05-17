@@ -51,6 +51,20 @@ var serveTokenCmd = &cobra.Command{
 	RunE:  runServeToken,
 }
 
+var servePairCmd = &cobra.Command{
+	Use:   "pair",
+	Short: "Print the pairing URI / QR for the running daemon",
+	Long: `Emits the same pairing payload as the startup banner, but at any
+time — useful when stash serve is running as a launchd daemon
+and the startup output is in a log file the user doesn't read.
+The Mac app's Settings → Phone pairing tab shells out to this
+subcommand to render the QR locally.
+
+  stash serve pair           — JSON with host, port, token, uri
+  stash serve pair --qr      — terminal QR + human-readable URI`,
+	RunE: runServePair,
+}
+
 func init() {
 	serveCmd.Flags().StringP("addr", "a", ":9999", "Listen address (host:port). Bind to a specific interface with e.g. 192.168.1.10:9999.")
 	serveCmd.Flags().String("advertise", "", "Hostname / IP advertised in the pairing QR (default: first non-loopback IPv4)")
@@ -58,7 +72,12 @@ func init() {
 
 	serveTokenCmd.Flags().Bool("rotate", false, "Generate a fresh token, invalidating all paired devices")
 
+	servePairCmd.Flags().StringP("addr", "a", ":9999", "Address the daemon is listening on (matches `serve --addr`)")
+	servePairCmd.Flags().String("advertise", "", "Override the advertised host (default: first non-loopback IPv4)")
+	servePairCmd.Flags().Bool("qr", false, "Render the QR to the terminal in addition to the URI")
+
 	serveCmd.AddCommand(serveTokenCmd)
+	serveCmd.AddCommand(servePairCmd)
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -128,6 +147,45 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "\nshutting down…")
 		return server.ShutdownWithGrace(context.Background(), httpSrv)
 	}
+}
+
+func runServePair(cmd *cobra.Command, _ []string) error {
+	stashDir := config.Dir()
+	token, err := server.LoadOrCreateToken(stashDir)
+	if err != nil {
+		return err
+	}
+	addr, _ := cmd.Flags().GetString("addr")
+	advertise, _ := cmd.Flags().GetString("advertise")
+	port, err := portFromAddr(addr)
+	if err != nil {
+		return err
+	}
+	if advertise == "" {
+		advertise = server.FirstLANAddress()
+		if advertise == "" {
+			advertise = "localhost"
+		}
+	}
+	uri := server.PairingURI(advertise, port, token)
+	if flagJSON {
+		printJSON(map[string]any{
+			"host":  advertise,
+			"port":  port,
+			"token": token,
+			"uri":   uri,
+		})
+		return nil
+	}
+	showQR, _ := cmd.Flags().GetBool("qr")
+	if showQR {
+		_ = server.RenderQRTerm(cmd.OutOrStdout(), uri)
+		fmt.Fprintln(cmd.OutOrStdout())
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Server:  %s:%d\n", advertise, port)
+	fmt.Fprintf(cmd.OutOrStdout(), "Token:   %s\n", token)
+	fmt.Fprintf(cmd.OutOrStdout(), "URI:     %s\n", uri)
+	return nil
 }
 
 func runServeToken(cmd *cobra.Command, _ []string) error {

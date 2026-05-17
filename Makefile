@@ -5,7 +5,7 @@ GOFLAGS = -trimpath
 
 PLATFORMS = linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: build test clean release deploy generate install-completion install-manpage install-chrome-host
+.PHONY: build test clean release deploy generate install-completion install-manpage install-chrome-host install-launchd uninstall-launchd
 
 generate:
 	go generate ./internal/manpage/
@@ -37,6 +37,13 @@ release: clean test
 	rm dist/stash.1
 
 deploy: build install-manpage install-completion install-chrome-host
+	@# Unload the launchd daemon BEFORE overwriting the binary.
+	@# On Apple Silicon, copying over a running ad-hoc-signed
+	@# executable invalidates the in-kernel code-signing state and
+	@# subsequent launches die with OS_REASON_CODESIGNING. The
+	@# `|| true` keeps the deploy working on a fresh machine where
+	@# the daemon isn't installed yet.
+	-launchctl unload $(PLIST_DEST) 2>/dev/null || true
 	cp $(BINARY) ~/.local/bin/
 	@# Ad-hoc sign — macOS Sequoia+ Gatekeeper SIGKILLs unsigned
 	@# binaries from new locations (including ~/.local/bin) on
@@ -44,6 +51,36 @@ deploy: build install-manpage install-completion install-chrome-host
 	@# the Mac app's `stash list` subprocess returns no output
 	@# and the items list renders empty.
 	codesign --force --sign - ~/.local/bin/$(BINARY)
+	$(MAKE) install-launchd
+
+# launchd plumbing — installs / re-installs the user agent that
+# keeps `stash serve` alive across reboots and deploys. Idempotent:
+# safe to re-run on every `make deploy`. Pattern adapted from
+# sortie's Makefile (template plist + sed substitution).
+PLIST_LABEL := com.msjurseth.stash.serve
+PLIST_DEST  := $(HOME)/Library/LaunchAgents/$(PLIST_LABEL).plist
+BINARY_PATH := $(HOME)/.local/bin/$(BINARY)
+LOG_PATH    := $(HOME)/Library/Logs/stash-serve.log
+
+install-launchd:
+	@mkdir -p "$(HOME)/Library/LaunchAgents" "$(HOME)/Library/Logs"
+	sed -e 's|__BINARY_PATH__|$(BINARY_PATH)|g' \
+		-e 's|__LOG_PATH__|$(LOG_PATH)|g' \
+		$(PLIST_LABEL).plist.tpl > "$(PLIST_DEST)"
+	launchctl load "$(PLIST_DEST)"
+	@echo "stash serve daemon installed and started."
+	@echo "  Plist: $(PLIST_DEST)"
+	@echo "  Log:   $(LOG_PATH)"
+	@echo "  Check: launchctl list | grep $(PLIST_LABEL)"
+
+uninstall-launchd:
+	@if [ -f "$(PLIST_DEST)" ]; then \
+		launchctl unload "$(PLIST_DEST)" 2>/dev/null || true; \
+		rm -f "$(PLIST_DEST)"; \
+		echo "stash serve daemon uninstalled."; \
+	else \
+		echo "No daemon installed."; \
+	fi
 
 install-manpage:
 	install -d /usr/local/share/man/man1

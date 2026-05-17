@@ -30,11 +30,18 @@ type Server struct {
 	NewSnippetID  func() string
 }
 
-// Handler returns the bearer-guarded HTTP mux ready to wrap in
-// http.Server.
+// Handler returns the HTTP mux ready to wrap in http.Server. The
+// bearer-token middleware is applied to every endpoint EXCEPT
+// /healthz, which is intentionally unauthenticated so liveness
+// probes (launchd, `stash serve status`, the Mac app's Pairing tab)
+// can confirm the daemon is up without consulting the token file.
 func (s *Server) Handler() http.Handler {
+	// Public surface — no bearer required. Liveness only; never put
+	// anything secret on this mux.
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("GET /healthz", s.handleHealth)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /capture", s.handleCapture)
 	mux.HandleFunc("GET /items", s.handleListItems)
 	mux.HandleFunc("GET /items/{id}", s.handleGetItem)
@@ -57,7 +64,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /items/{id}/files/{fid}/primary", s.handlePromoteItemFile)
 	mux.HandleFunc("GET /items/{id}/files/{fid}/blob", s.handleItemFileBlob)
 	mux.HandleFunc("POST /items/merge", s.handleMergeItems)
-	return requireBearer(s.Token, mux)
+
+	// Compose: /healthz lands on publicMux, everything else hits the
+	// authenticated mux. http.ServeMux uses "longest prefix wins" so
+	// the exact /healthz route on publicMux takes precedence over
+	// the catch-all on the protected mux.
+	root := http.NewServeMux()
+	root.Handle("/healthz", publicMux)
+	root.Handle("/", requireBearer(s.Token, mux))
+	return root
 }
 
 // ───────────────────────────────────────────────────────────

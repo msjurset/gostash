@@ -7,7 +7,7 @@ import (
 	"github.com/msjurset/gostash/internal/model"
 )
 
-func tripTestItem(id string, t time.Time, tags ...string) model.Item {
+func momentTestItem(id string, t time.Time, tags ...string) model.Item {
 	it := model.Item{ID: id, CreatedAt: t}
 	for _, name := range tags {
 		it.Tags = append(it.Tags, model.Tag{Name: name})
@@ -33,7 +33,7 @@ func TestClusterByTime(t *testing.T) {
 		{
 			name: "single item is one cluster",
 			items: []model.Item{
-				tripTestItem("a", base),
+				momentTestItem("a", base),
 			},
 			gap:  1 * time.Hour,
 			want: [][]string{{"a"}},
@@ -41,8 +41,8 @@ func TestClusterByTime(t *testing.T) {
 		{
 			name: "two within gap cluster together",
 			items: []model.Item{
-				tripTestItem("a", base),
-				tripTestItem("b", base.Add(30*time.Minute)),
+				momentTestItem("a", base),
+				momentTestItem("b", base.Add(30*time.Minute)),
 			},
 			gap:  1 * time.Hour,
 			want: [][]string{{"a", "b"}},
@@ -50,8 +50,8 @@ func TestClusterByTime(t *testing.T) {
 		{
 			name: "two beyond gap split",
 			items: []model.Item{
-				tripTestItem("a", base),
-				tripTestItem("b", base.Add(3*time.Hour)),
+				momentTestItem("a", base),
+				momentTestItem("b", base.Add(3*time.Hour)),
 			},
 			gap:  1 * time.Hour,
 			want: [][]string{{"a"}, {"b"}},
@@ -59,11 +59,11 @@ func TestClusterByTime(t *testing.T) {
 		{
 			name: "mixed: tight burst then long pause then pair",
 			items: []model.Item{
-				tripTestItem("a", base),
-				tripTestItem("b", base.Add(15*time.Minute)),
-				tripTestItem("c", base.Add(45*time.Minute)),
-				tripTestItem("d", base.Add(8*time.Hour)),
-				tripTestItem("e", base.Add(9*time.Hour)),
+				momentTestItem("a", base),
+				momentTestItem("b", base.Add(15*time.Minute)),
+				momentTestItem("c", base.Add(45*time.Minute)),
+				momentTestItem("d", base.Add(8*time.Hour)),
+				momentTestItem("e", base.Add(9*time.Hour)),
 			},
 			gap:  2 * time.Hour,
 			want: [][]string{{"a", "b", "c"}, {"d", "e"}},
@@ -71,9 +71,9 @@ func TestClusterByTime(t *testing.T) {
 		{
 			name: "out-of-order input gets sorted",
 			items: []model.Item{
-				tripTestItem("c", base.Add(45*time.Minute)),
-				tripTestItem("a", base),
-				tripTestItem("b", base.Add(15*time.Minute)),
+				momentTestItem("c", base.Add(45*time.Minute)),
+				momentTestItem("a", base),
+				momentTestItem("b", base.Add(15*time.Minute)),
 			},
 			gap:  2 * time.Hour,
 			want: [][]string{{"a", "b", "c"}},
@@ -115,29 +115,29 @@ func TestComputeSharedTags(t *testing.T) {
 		{
 			name: "tag in every item ⇒ shared",
 			items: []model.Item{
-				tripTestItem("a", time.Now(), "beach", "nature"),
-				tripTestItem("b", time.Now(), "beach"),
-				tripTestItem("c", time.Now(), "beach", "sunset"),
+				momentTestItem("a", time.Now(), "beach", "nature"),
+				momentTestItem("b", time.Now(), "beach"),
+				momentTestItem("c", time.Now(), "beach", "sunset"),
 			},
 			want: []string{"beach"},
 		},
 		{
 			name: "tag below 75% threshold dropped",
 			items: []model.Item{
-				tripTestItem("a", time.Now(), "beach", "nature"),
-				tripTestItem("b", time.Now(), "beach"),
-				tripTestItem("c", time.Now(), "sunset"),
-				tripTestItem("d", time.Now(), "sunset"),
+				momentTestItem("a", time.Now(), "beach", "nature"),
+				momentTestItem("b", time.Now(), "beach"),
+				momentTestItem("c", time.Now(), "sunset"),
+				momentTestItem("d", time.Now(), "sunset"),
 			},
 			want: nil, // beach only appears in 2/4 = 50%, nature 1/4
 		},
 		{
 			name: "exactly 75% threshold passes",
 			items: []model.Item{
-				tripTestItem("a", time.Now(), "trip"),
-				tripTestItem("b", time.Now(), "trip"),
-				tripTestItem("c", time.Now(), "trip"),
-				tripTestItem("d", time.Now()),
+				momentTestItem("a", time.Now(), "trip"),
+				momentTestItem("b", time.Now(), "trip"),
+				momentTestItem("c", time.Now(), "trip"),
+				momentTestItem("d", time.Now()),
 			},
 			want: []string{"trip"}, // 3/4 = 75%
 		},
@@ -152,8 +152,8 @@ func TestComputeSharedTags(t *testing.T) {
 		{
 			name: "all-distinct cluster of 2 returns nothing",
 			items: []model.Item{
-				tripTestItem("a", time.Now(), "p"),
-				tripTestItem("b", time.Now(), "q"),
+				momentTestItem("a", time.Now(), "p"),
+				momentTestItem("b", time.Now(), "q"),
 			},
 			want: nil,
 		},
@@ -240,14 +240,14 @@ func TestAllInSameCollection(t *testing.T) {
 }
 
 func TestNameFor(t *testing.T) {
-	mk := func(start, end string, tags ...string) TripSuggestion {
+	mk := func(start, end string, tags ...string) MomentSuggestion {
 		s, _ := time.Parse(time.RFC3339, start)
 		e, _ := time.Parse(time.RFC3339, end)
-		return TripSuggestion{Start: s, End: e, SharedTags: tags}
+		return MomentSuggestion{Start: s, End: e, SharedTags: tags}
 	}
 	cases := []struct {
 		name string
-		sug  TripSuggestion
+		sug  MomentSuggestion
 		want string
 	}{
 		{
@@ -301,7 +301,7 @@ func TestBuildSuggestions_EndToEnd(t *testing.T) {
 		{ID: "p2", CreatedAt: base.Add(73 * time.Hour)},
 	}
 
-	got := buildSuggestions(items, tripParams{
+	got := buildSuggestions(items, momentParams{
 		MaxGap:   6 * time.Hour,
 		MaxSpan:  5 * 24 * time.Hour,
 		MinItems: 3,
@@ -336,7 +336,7 @@ func TestBuildSuggestions_DropsAlreadyCollected(t *testing.T) {
 		{ID: "2", CreatedAt: base.Add(time.Hour), Collections: col},
 		{ID: "3", CreatedAt: base.Add(2 * time.Hour), Collections: col},
 	}
-	got := buildSuggestions(items, tripParams{
+	got := buildSuggestions(items, momentParams{
 		MaxGap:   6 * time.Hour,
 		MaxSpan:  5 * 24 * time.Hour,
 		MinItems: 3,
@@ -355,7 +355,7 @@ func TestBuildSuggestions_DropsOverlongSpan(t *testing.T) {
 		{ID: "3", CreatedAt: base.Add(5*24*time.Hour + 5*time.Hour)},
 		{ID: "4", CreatedAt: base.Add(7 * 24 * time.Hour)},
 	}
-	got := buildSuggestions(items, tripParams{
+	got := buildSuggestions(items, momentParams{
 		MaxGap:   6 * time.Hour,
 		MaxSpan:  5 * 24 * time.Hour,
 		MinItems: 3,

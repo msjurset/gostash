@@ -14,56 +14,60 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// tripSuggestCmd surfaces clusters of items captured close together
-// in time (and ideally sharing a location or tag) as candidate trip
-// or event collections. Pure suggestion engine — doesn't mutate the
-// stash until the user runs `stash trip-suggest accept`.
-var tripSuggestCmd = &cobra.Command{
-	Use:   "trip-suggest",
+// momentsCmd surfaces clusters of items captured close together
+// in time (and ideally sharing a location or tag) as candidate
+// trip / event / "moment" collections. Pure suggestion engine —
+// doesn't mutate the stash until the user runs `stash moments
+// accept`. Time precedence: CapturedAt → CreatedAt fallback (see
+// clusterTime helper) so a burst of photos all stashed days later
+// still clusters by when they were actually taken.
+var momentsCmd = &cobra.Command{
+	Use:   "moments",
 	Short: "Suggest trip / event collections from time-clustered items",
 	Long: `Walks recent items, groups them into time-clusters separated by a
 configurable gap, and surfaces clusters that look like trips or events:
 multiple items captured close together, often sharing a location or a
 tag. Each suggestion is a candidate collection the user can accept
-into the stash.
+into the stash. Time precedence: items.captured_at (EXIF / email
+headers / file mtime) → items.created_at fallback.
 
 Cluster scoring favors size, location coherence, and shared-tag
 density. Suggestions with all items already belonging to the same
 existing collection are dropped — those have already been actioned.
 
-  stash trip-suggest                       — list current suggestions
-  stash trip-suggest --json                — JSON list (Mac UI / scripts)
-  stash trip-suggest accept --name NAME    — create collection + add items
+  stash moments                       — list current suggestions
+  stash moments --json                — JSON list (Mac UI / scripts)
+  stash moments accept --name NAME    — create collection + add items
        ID ID ID
 
 Defaults to scanning the last 90d; --all widens to the whole stash.`,
-	RunE: runTripSuggest,
+	RunE: runMoments,
 }
 
-var tripSuggestAcceptCmd = &cobra.Command{
+var momentsAcceptCmd = &cobra.Command{
 	Use:   "accept ID...",
 	Short: "Accept a suggestion: create a collection and add the items",
 	Args:  cobra.MinimumNArgs(1),
-	RunE:  runTripSuggestAccept,
+	RunE:  runMomentsAccept,
 }
 
 func init() {
-	tripSuggestCmd.Flags().Duration("max-gap", 6*time.Hour, "Gap between consecutive items that starts a new cluster")
-	tripSuggestCmd.Flags().Duration("max-span", 5*24*time.Hour, "Drop clusters whose total duration exceeds this")
-	tripSuggestCmd.Flags().Duration("window", 90*24*time.Hour, "How far back to scan (ignored when --all is set)")
-	tripSuggestCmd.Flags().Bool("all", false, "Scan the whole stash instead of the recent window")
-	tripSuggestCmd.Flags().Int("min-items", 3, "Smallest cluster size to surface")
-	tripSuggestCmd.Flags().Int("limit", 20, "Maximum number of suggestions to emit (highest-scored first)")
+	momentsCmd.Flags().Duration("max-gap", 6*time.Hour, "Gap between consecutive items that starts a new cluster")
+	momentsCmd.Flags().Duration("max-span", 5*24*time.Hour, "Drop clusters whose total duration exceeds this")
+	momentsCmd.Flags().Duration("window", 90*24*time.Hour, "How far back to scan (ignored when --all is set)")
+	momentsCmd.Flags().Bool("all", false, "Scan the whole stash instead of the recent window")
+	momentsCmd.Flags().Int("min-items", 3, "Smallest cluster size to surface")
+	momentsCmd.Flags().Int("limit", 20, "Maximum number of suggestions to emit (highest-scored first)")
 
-	tripSuggestAcceptCmd.Flags().StringP("name", "n", "", "Collection name (required)")
-	tripSuggestAcceptCmd.Flags().StringP("description", "d", "", "Optional collection description")
-	_ = tripSuggestAcceptCmd.MarkFlagRequired("name")
+	momentsAcceptCmd.Flags().StringP("name", "n", "", "Collection name (required)")
+	momentsAcceptCmd.Flags().StringP("description", "d", "", "Optional collection description")
+	_ = momentsAcceptCmd.MarkFlagRequired("name")
 
-	tripSuggestCmd.AddCommand(tripSuggestAcceptCmd)
-	rootCmd.AddCommand(tripSuggestCmd)
+	momentsCmd.AddCommand(momentsAcceptCmd)
+	rootCmd.AddCommand(momentsCmd)
 }
 
-func runTripSuggest(cmd *cobra.Command, _ []string) error {
+func runMoments(cmd *cobra.Command, _ []string) error {
 	maxGap, _ := cmd.Flags().GetDuration("max-gap")
 	maxSpan, _ := cmd.Flags().GetDuration("max-span")
 	window, _ := cmd.Flags().GetDuration("window")
@@ -88,7 +92,7 @@ func runTripSuggest(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	suggestions := buildSuggestions(items, tripParams{
+	suggestions := buildSuggestions(items, momentParams{
 		MaxGap:   maxGap,
 		MaxSpan:  maxSpan,
 		MinItems: minItems,
@@ -127,7 +131,7 @@ func runTripSuggest(cmd *cobra.Command, _ []string) error {
 	return w.Flush()
 }
 
-func runTripSuggestAccept(cmd *cobra.Command, args []string) error {
+func runMomentsAccept(cmd *cobra.Command, args []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	desc, _ := cmd.Flags().GetString("description")
 	if name == "" {
@@ -176,18 +180,18 @@ func runTripSuggestAccept(cmd *cobra.Command, args []string) error {
 // Pure suggestion engine (tested standalone)
 // ───────────────────────────────────────────────────────────
 
-// TripSuggestion is the unit returned by `stash trip-suggest`. JSON
+// MomentSuggestion is the unit returned by `stash trip-suggest`. JSON
 // shape is the contract for the Mac UI / scripts.
 //
 // `Items` carries enough per-item context (id, title, thumbnail path,
 // type) for a UI to render a filmstrip preview without a second
 // round trip per item. Callers needing only the ID list (e.g. piping
 // into `accept`) can map across this slice.
-type TripSuggestion struct {
+type MomentSuggestion struct {
 	Start          time.Time         `json:"start"`
 	End            time.Time         `json:"end"`
 	ItemCount      int               `json:"item_count"`
-	Items          []TripItemPreview `json:"items"`
+	Items          []MomentItemPreview `json:"items"`
 	SuggestedName  string            `json:"suggested_name"`
 	Score          float64           `json:"score"`
 	SharedTags     []string          `json:"shared_tags,omitempty"`
@@ -195,7 +199,7 @@ type TripSuggestion struct {
 	LocationCount  int               `json:"location_count,omitempty"`
 }
 
-// TripItemPreview is the minimal subset of an item the trip-suggest
+// MomentItemPreview is the minimal subset of an item the trip-suggest
 // UI needs to draw a filmstrip and let the user verify the cluster
 // before accepting. ThumbnailPath is relative to the files dir (same
 // convention as Item.ThumbnailPath); StorePath is the content-hashed
@@ -203,7 +207,7 @@ type TripSuggestion struct {
 // generated yet — for image items, rendering the full blob looks
 // fine at small tile sizes and avoids a "🖼️ everywhere" placeholder
 // fog on older captures that pre-date thumbnail-backfill.
-type TripItemPreview struct {
+type MomentItemPreview struct {
 	ID            string `json:"id"`
 	Title         string `json:"title,omitempty"`
 	Type          string `json:"type,omitempty"`
@@ -211,7 +215,7 @@ type TripItemPreview struct {
 	StorePath     string `json:"store_path,omitempty"`
 }
 
-type tripParams struct {
+type momentParams struct {
 	MaxGap   time.Duration
 	MaxSpan  time.Duration
 	MinItems int
@@ -219,9 +223,9 @@ type tripParams struct {
 
 // buildSuggestions is the pure pipeline: items → clusters → filtered
 // suggestions. Split from the cobra wrapper so it's table-testable.
-func buildSuggestions(items []model.Item, p tripParams) []TripSuggestion {
+func buildSuggestions(items []model.Item, p momentParams) []MomentSuggestion {
 	clusters := clusterByTime(items, p.MaxGap)
-	out := make([]TripSuggestion, 0, len(clusters))
+	out := make([]MomentSuggestion, 0, len(clusters))
 	for _, c := range clusters {
 		if len(c) < p.MinItems {
 			continue
@@ -287,15 +291,15 @@ func clusterTime(item *model.Item) time.Time {
 	return item.CreatedAt
 }
 
-func scoreCluster(c []model.Item) TripSuggestion {
-	s := TripSuggestion{
+func scoreCluster(c []model.Item) MomentSuggestion {
+	s := MomentSuggestion{
 		Start:     clusterTime(&c[0]),
 		End:       clusterTime(&c[len(c)-1]),
 		ItemCount: len(c),
-		Items:     make([]TripItemPreview, 0, len(c)),
+		Items:     make([]MomentItemPreview, 0, len(c)),
 	}
 	for _, it := range c {
-		s.Items = append(s.Items, TripItemPreview{
+		s.Items = append(s.Items, MomentItemPreview{
 			ID:            it.ID,
 			Title:         it.Title,
 			Type:          string(it.Type),
@@ -416,7 +420,7 @@ func allInSameCollection(c []model.Item) bool {
 	return len(candidate) > 0
 }
 
-func nameFor(s TripSuggestion) string {
+func nameFor(s MomentSuggestion) string {
 	startDay := s.Start.Format("2006-01-02")
 	endDay := s.End.Format("2006-01-02")
 	var datePart string
@@ -443,7 +447,7 @@ func formatRange(start, end time.Time) string {
 	return fmt.Sprintf("%s → %s", startDay, endDay)
 }
 
-func joinShortItemIDs(items []TripItemPreview) string {
+func joinShortItemIDs(items []MomentItemPreview) string {
 	short := make([]string, len(items))
 	for i, it := range items {
 		short[i] = shortID(it.ID)

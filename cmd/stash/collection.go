@@ -20,6 +20,12 @@ var collectionCmd = &cobra.Command{
 var colListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all collections",
+	Long: `List collections. Default sort is alphabetical by name; --sort
+flips to "recent" (newest MAX(added_at) per collection — what the
+Mac sidebar's Recent toggle uses) or "frequent" (view_count DESC,
+backing the Frequent toggle). --limit caps the output; useful
+together with --sort recent to grab just the top N for a sidebar
+render.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := openStore()
 		if err != nil {
@@ -27,12 +33,51 @@ var colListCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		cols, err := s.ListCollections(context.Background())
+		sortMode, _ := cmd.Flags().GetString("sort")
+		limit, _ := cmd.Flags().GetInt("limit")
+		ctx := context.Background()
+
+		var cols []model.Collection
+		switch sortMode {
+		case "", "name":
+			cols, err = s.ListCollections(ctx)
+		case "recent":
+			cols, err = s.ListCollectionsByRecentActivity(ctx, limit)
+		case "frequent":
+			cols, err = s.ListCollectionsByFrequency(ctx, limit)
+		default:
+			return fmt.Errorf("unknown --sort %q (want name, recent, or frequent)", sortMode)
+		}
 		if err != nil {
 			return err
 		}
+		// Honor --limit for the name-sorted path too (the typed
+		// store methods already cap, but ListCollections doesn't).
+		if sortMode == "" || sortMode == "name" {
+			if limit > 0 && len(cols) > limit {
+				cols = cols[:limit]
+			}
+		}
 		printCollections(cols)
 		return nil
+	},
+}
+
+var colTouchCmd = &cobra.Command{
+	Use:   "touch <name>",
+	Short: "Increment a collection's view_count (Frequent-sort signal)",
+	Long: `Bumps the collection's view_count by 1. Called by the Mac sidebar
+when the user navigates to a collection so the "Frequent" sort
+mode reflects actual usage. Silent no-op on a missing name —
+keeps a stale post-rename click from erroring.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return s.TouchCollection(context.Background(), args[0])
 	},
 }
 
@@ -197,10 +242,13 @@ func readIDLines(cmd *cobra.Command) []string {
 
 func init() {
 	colCreateCmd.Flags().StringP("description", "d", "", "Collection description")
+	colListCmd.Flags().String("sort", "name", "Sort mode: name | recent | frequent")
+	colListCmd.Flags().Int("limit", 0, "Maximum number of collections to return (0 = all)")
 	collectionCmd.AddCommand(colListCmd)
 	collectionCmd.AddCommand(colCreateCmd)
 	collectionCmd.AddCommand(colDeleteCmd)
 	collectionCmd.AddCommand(colShowCmd)
 	collectionCmd.AddCommand(colReorderCmd)
+	collectionCmd.AddCommand(colTouchCmd)
 	rootCmd.AddCommand(collectionCmd)
 }

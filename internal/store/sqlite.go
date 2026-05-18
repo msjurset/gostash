@@ -110,7 +110,50 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateDismissedMoments(); err != nil {
 		return fmt.Errorf("migrate dismissed_moments: %w", err)
 	}
+	if err := s.migrateCollectionUsageSignals(); err != nil {
+		return fmt.Errorf("migrate collection usage signals: %w", err)
+	}
 
+	return nil
+}
+
+// migrateCollectionUsageSignals adds the two columns that back the
+// "Recent" and "Frequent" sidebar sort modes:
+//   - item_collections.added_at — when an item was added to a
+//     collection. Recent = newest MAX(added_at) per collection.
+//     Backfilled to items.created_at for legacy rows so the sort
+//     stays useful before any new adds happen.
+//   - collections.view_count — incremented when the user navigates
+//     to a collection. Frequent = highest view_count.
+// Idempotent.
+func (s *SQLiteStore) migrateCollectionUsageSignals() error {
+	// SQLite ALTER TABLE ADD COLUMN can't take a non-constant
+	// default like CURRENT_TIMESTAMP — that's a CREATE TABLE-only
+	// privilege. So the column is nullable, backfilled from the
+	// underlying item's created_at as a reasonable proxy for
+	// "when did this membership begin", and new rows get
+	// CURRENT_TIMESTAMP populated explicitly by AddToCollection.
+	if err := s.addColumnIfMissing("item_collections", "added_at",
+		`ALTER TABLE item_collections ADD COLUMN added_at TIMESTAMP`,
+		`UPDATE item_collections
+		 SET added_at = (
+			SELECT created_at FROM items WHERE items.id = item_collections.item_id
+		 )
+		 WHERE added_at IS NULL`,
+	); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_item_collections_added_at
+		 ON item_collections(collection_id, added_at DESC)`,
+	); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("collections", "view_count",
+		`ALTER TABLE collections ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -902,6 +945,75 @@ func (s *SQLiteStore) ListCollections(ctx context.Context) ([]model.Collection, 
 	return cols, rows.Err()
 }
 
+// ListCollectionsByRecentActivity returns collections ordered by the
+// most recent item-add timestamp (newest first). Collections with no
+// items fall to the bottom — they have no activity to sort by.
+// Backs the Mac sidebar's "Recent" cap-at-N section.
+func (s *SQLiteStore) ListCollectionsByRecentActivity(ctx context.Context, limit int) ([]model.Collection, error) {
+	q := `
+		SELECT c.id, c.name, c.description
+		FROM collections c
+		LEFT JOIN item_collections ic ON ic.collection_id = c.id
+		GROUP BY c.id, c.name, c.description
+		ORDER BY MAX(ic.added_at) DESC NULLS LAST, c.name
+	`
+	args := []any{}
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	return s.queryCollections(ctx, q, args)
+}
+
+// ListCollectionsByFrequency returns collections ordered by
+// view_count DESC. Ties broken by name so the order is stable
+// across calls.
+func (s *SQLiteStore) ListCollectionsByFrequency(ctx context.Context, limit int) ([]model.Collection, error) {
+	q := `
+		SELECT id, name, description
+		FROM collections
+		ORDER BY view_count DESC, name
+	`
+	args := []any{}
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	return s.queryCollections(ctx, q, args)
+}
+
+// queryCollections is the shared scan helper for the Sorted-list
+// variants above. Kept private; callers go through the typed
+// methods so the SQL stays in one file.
+func (s *SQLiteStore) queryCollections(ctx context.Context, q string, args []any) ([]model.Collection, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list collections: %w", err)
+	}
+	defer rows.Close()
+	var cols []model.Collection
+	for rows.Next() {
+		var c model.Collection
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description); err != nil {
+			return nil, fmt.Errorf("scan collection: %w", err)
+		}
+		cols = append(cols, c)
+	}
+	return cols, rows.Err()
+}
+
+// TouchCollection bumps the view_count column. Called from the Mac
+// sidebar when the user navigates to a collection so the "Frequent"
+// sort reflects actual usage. Idempotent on missing names — silent
+// no-op so a stale sidebar click after rename doesn't error.
+func (s *SQLiteStore) TouchCollection(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE collections SET view_count = view_count + 1 WHERE name = ?`,
+		name,
+	)
+	return err
+}
+
 // CreateCollection creates a new collection.
 func (s *SQLiteStore) CreateCollection(ctx context.Context, name, description string) (*model.Collection, error) {
 	res, err := s.db.ExecContext(ctx,
@@ -1366,7 +1478,15 @@ func (s *SQLiteStore) addToCollectionTx(ctx context.Context, tx *sql.Tx, itemID,
 		return fmt.Errorf("query next position: %w", err)
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO item_collections (item_id, collection_id, position) VALUES (?, ?, ?)`,
+		// added_at = CURRENT_TIMESTAMP records when this membership
+		// began. Used by the Mac sidebar's "Recent" sort mode to
+		// surface the Collections you're actively building. INSERT
+		// OR IGNORE means duplicate adds are silent — but in that
+		// case we don't bump added_at, which matches user
+		// expectation (re-adding the same item shouldn't "freshen"
+		// the collection).
+		`INSERT OR IGNORE INTO item_collections (item_id, collection_id, position, added_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
 		itemID, colID, nextPos,
 	)
 	if err != nil {

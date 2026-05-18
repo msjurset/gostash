@@ -53,6 +53,13 @@ type Store interface {
 
 	// Collections
 	ListCollections(ctx context.Context) ([]model.Collection, error)
+	// ListCollectionsByRecentActivity returns collections sorted by
+	// the newest MAX(item_collections.added_at) — backs the Mac
+	// sidebar's "Recent" sort. Pass limit > 0 to cap; 0 = all.
+	ListCollectionsByRecentActivity(ctx context.Context, limit int) ([]model.Collection, error)
+	// ListCollectionsByFrequency returns collections sorted by
+	// view_count DESC — backs the "Frequent" sort.
+	ListCollectionsByFrequency(ctx context.Context, limit int) ([]model.Collection, error)
 	CreateCollection(ctx context.Context, name, description string) (*model.Collection, error)
 	GetCollection(ctx context.Context, name string) (*model.Collection, error)
 	DeleteCollection(ctx context.Context, name string) error
@@ -60,6 +67,9 @@ type Store interface {
 	RemoveFromCollection(ctx context.Context, itemID, collectionName string) error
 	ReorderCollection(ctx context.Context, name string, orderedIDs []string) error
 	ListCollectionItems(ctx context.Context, name string, filter model.ItemFilter) ([]model.Item, error)
+	// TouchCollection increments view_count for the Frequent sort.
+	// Called by the Mac when the user navigates to a collection.
+	TouchCollection(ctx context.Context, name string) error
 
 	// Duplicate Dismissal
 	DismissDupePair(ctx context.Context, idA, idB string) error

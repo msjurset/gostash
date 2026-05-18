@@ -1,6 +1,9 @@
 package extract
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // Result holds the output of content extraction.
 type Result struct {
@@ -8,6 +11,12 @@ type Result struct {
 	Title    string   // extracted title (if any)
 	MimeType string   // detected MIME type
 	Tags     []string // auto-suggested tags
+	// CapturedAt is the best content-creation timestamp the
+	// extractor could derive. Today only the email extractor sets
+	// it (from the Date / Received headers); other extractors
+	// leave it nil and let the caller fall back to filesystem
+	// time or EXIF.
+	CapturedAt *time.Time
 }
 
 // Extractor extracts searchable text from content.

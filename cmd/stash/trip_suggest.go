@@ -243,8 +243,11 @@ func buildSuggestions(items []model.Item, p tripParams) []TripSuggestion {
 
 // clusterByTime walks items in chronological order and starts a new
 // cluster whenever the gap between consecutive items exceeds maxGap.
-// Items must already include CreatedAt; nil timestamps land in their
-// own degenerate cluster.
+// Uses each item's CapturedAt when set (when the real-world content
+// was created — EXIF shutter time, email send time, file mtime),
+// falling back to CreatedAt (when the item landed in the stash).
+// The fallback matters for URL items and any pre-captured_at-rollout
+// content that hasn't been backfilled yet.
 func clusterByTime(items []model.Item, maxGap time.Duration) [][]model.Item {
 	if len(items) == 0 {
 		return nil
@@ -252,19 +255,20 @@ func clusterByTime(items []model.Item, maxGap time.Duration) [][]model.Item {
 	sorted := make([]model.Item, len(items))
 	copy(sorted, items)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].CreatedAt.Before(sorted[j].CreatedAt)
+		return clusterTime(&sorted[i]).Before(clusterTime(&sorted[j]))
 	})
 	var clusters [][]model.Item
 	var current []model.Item
 	var lastTime time.Time
 	for _, item := range sorted {
-		if len(current) == 0 || item.CreatedAt.Sub(lastTime) <= maxGap {
+		ct := clusterTime(&item)
+		if len(current) == 0 || ct.Sub(lastTime) <= maxGap {
 			current = append(current, item)
 		} else {
 			clusters = append(clusters, current)
 			current = []model.Item{item}
 		}
-		lastTime = item.CreatedAt
+		lastTime = ct
 	}
 	if len(current) > 0 {
 		clusters = append(clusters, current)
@@ -272,10 +276,21 @@ func clusterByTime(items []model.Item, maxGap time.Duration) [][]model.Item {
 	return clusters
 }
 
+// clusterTime returns the timestamp the clustering algorithm should
+// use for an item — CapturedAt when populated, CreatedAt otherwise.
+// Exposed so scoreCluster can reuse the same precedence when
+// computing the suggestion's Start / End range.
+func clusterTime(item *model.Item) time.Time {
+	if item.CapturedAt != nil {
+		return *item.CapturedAt
+	}
+	return item.CreatedAt
+}
+
 func scoreCluster(c []model.Item) TripSuggestion {
 	s := TripSuggestion{
-		Start:     c[0].CreatedAt,
-		End:       c[len(c)-1].CreatedAt,
+		Start:     clusterTime(&c[0]),
+		End:       clusterTime(&c[len(c)-1]),
 		ItemCount: len(c),
 		Items:     make([]TripItemPreview, 0, len(c)),
 	}

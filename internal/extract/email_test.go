@@ -31,6 +31,41 @@ func TestEmailExtractor_PlainText(t *testing.T) {
 	if res.Title != "Hello" {
 		t.Errorf("title = %q, want %q", res.Title, "Hello")
 	}
+	if res.CapturedAt == nil {
+		t.Fatal("CapturedAt should be parsed from the Date header")
+	}
+	// "Thu, 2 Apr 2026 12:00:00 +0000" → 2026-04-02T12:00:00Z
+	if got := res.CapturedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-04-02T12:00:00Z" {
+		t.Errorf("CapturedAt = %s, want 2026-04-02T12:00:00Z", got)
+	}
+}
+
+// Received: headers stamp the message later than the Date header
+// when the email was relayed / forwarded. mostRecentEmailDate must
+// pick the latest stamp so thread-replied messages cluster against
+// the thread's most recent activity, not its original send.
+func TestEmailExtractor_PrefersMostRecentReceived(t *testing.T) {
+	raw := "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Subject: Reply\r\n" +
+		"Date: Mon, 1 Apr 2026 09:00:00 +0000\r\n" +
+		"Received: from x by y; Mon, 1 Apr 2026 09:00:30 +0000\r\n" +
+		"Received: from y by z; Thu, 4 Apr 2026 17:30:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"reply body\r\n"
+
+	e := &EmailExtractor{}
+	res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CapturedAt == nil {
+		t.Fatal("CapturedAt should be populated from a Received header")
+	}
+	if got := res.CapturedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-04-04T17:30:00Z" {
+		t.Errorf("CapturedAt = %s, want the latest Received timestamp 2026-04-04T17:30:00Z", got)
+	}
 }
 
 func TestEmailExtractor_Charset(t *testing.T) {

@@ -1,7 +1,7 @@
-// Package exif reads JPEG/TIFF EXIF metadata. The only consumer
-// today is the image-capture pipeline that auto-fills
-// model.Item.Location from GPS tags on ingest, plus the backfill
-// command that retroactively processes existing items.
+// Package exif reads JPEG/TIFF EXIF metadata. Consumers include the
+// image-capture pipeline (auto-fills model.Item.Location from GPS
+// tags + model.Item.CapturedAt from DateTimeOriginal) and the
+// backfill commands that retroactively process existing items.
 package exif
 
 import (
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"time"
 
 	"github.com/rwcarlsen/goexif/exif"
 )
@@ -18,6 +19,12 @@ import (
 // the bare decode error so callers can treat "no location" as
 // silent skip vs surface a real read failure.
 var ErrNoGPS = errors.New("exif: no GPS tags")
+
+// ErrNoCaptureTime is returned when EXIF decoded cleanly but had no
+// usable DateTimeOriginal / CreateDate / DateTime tag. Callers
+// should treat it as silent skip — falling back to a filesystem
+// time signal is the standard recovery, not a real read failure.
+var ErrNoCaptureTime = errors.New("exif: no capture time")
 
 // ExtractGPS reads `r` as JPEG/TIFF EXIF and returns lat/lon when
 // present. HEIC and other container formats are not supported by
@@ -53,4 +60,33 @@ func ExtractGPS(r io.Reader) (lat, lon float64, err error) {
 		return 0, 0, ErrNoGPS
 	}
 	return lat, lon, nil
+}
+
+// ExtractCaptureTime reads `r` as JPEG/TIFF EXIF and returns the
+// best capture timestamp it can find. Preference order:
+//   1. DateTimeOriginal — when the shutter fired
+//   2. CreateDate (alias DateTimeDigitized) — usually equal to #1
+//   3. DateTime (file modification timestamp written by the camera)
+//
+// Returns ErrNoCaptureTime when none of the three are parseable —
+// the caller should fall back to the file's filesystem birth/mtime
+// (or accept that the item has no capture time).
+//
+// EXIF stores times in the camera's local timezone with no offset.
+// Without an offset tag, we can't recover the absolute moment — so
+// we parse as time.Local and assume the user's machine clock is
+// close enough. The Mac UI / clustering only need this for
+// human-scale comparisons (same-day, same-trip), not nanosecond
+// alignment.
+func ExtractCaptureTime(r io.Reader) (time.Time, error) {
+	x, decodeErr := exif.Decode(r)
+	if decodeErr != nil {
+		return time.Time{}, fmt.Errorf("decode exif: %w", decodeErr)
+	}
+	if t, err := x.DateTime(); err == nil && !t.IsZero() {
+		return t, nil
+	}
+	// goexif's DateTime() walks DateTimeOriginal → CreateDate →
+	// DateTime; only return ErrNoCaptureTime when *all* three fail.
+	return time.Time{}, ErrNoCaptureTime
 }

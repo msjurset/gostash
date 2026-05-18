@@ -215,6 +215,13 @@ func addSnippet(item *model.Item, fs interface{ Save(io.Reader) (string, int64, 
 	item.ExtractedText = string(data)
 	item.MimeType = "text/plain"
 	item.FileSize = int64(len(data))
+	// Snippets have no separate capture moment — the row's
+	// creation IS the capture. Set CapturedAt = CreatedAt
+	// explicitly so consumers like Moments clustering treat
+	// snippets uniformly with image/file items instead of
+	// silently falling back to created_at.
+	captured := item.CreatedAt
+	item.CapturedAt = &captured
 
 	// Snippets get a content_hash too so dedup works for clipboard
 	// captures of the same string. The filestore is content-

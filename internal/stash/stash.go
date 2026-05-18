@@ -277,12 +277,22 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 			if result.Title != "" && item.Title == "" {
 				item.Title = result.Title
 			}
+			// Email extractor surfaces the most recent message
+			// timestamp from the headers as CapturedAt; other
+			// extractors leave it nil. Honored here before EXIF /
+			// filesystem-time fallbacks since the header is
+			// authoritative for emails.
+			if result.CapturedAt != nil {
+				t := result.CapturedAt.UTC()
+				item.CapturedAt = &t
+			}
 		}
 	}
 
-	// EXIF GPS — image-only, best-effort. Re-open so we don't fight
-	// the extractor's reader position. ErrNoGPS / decode errors are
-	// silent skips: most non-phone images simply don't have a fix.
+	// EXIF — image-only, best-effort. Re-open per pass so we don't
+	// fight the extractor's reader position. ErrNoGPS /
+	// ErrNoCaptureTime / decode errors are silent skips: most
+	// non-phone images simply don't carry these tags.
 	if item.Type == model.TypeImage {
 		if exifFile, openErr := os.Open(absPath); openErr == nil {
 			if lat, lon, gpsErr := exif.ExtractGPS(exifFile); gpsErr == nil {
@@ -291,6 +301,28 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 				}
 			}
 			exifFile.Close()
+		}
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if captured, ctErr := exif.ExtractCaptureTime(exifFile); ctErr == nil {
+				t := captured.UTC()
+				item.CapturedAt = &t
+			}
+			exifFile.Close()
+		}
+	}
+
+	// Filesystem-time fallback. For images, only kick in when EXIF
+	// failed to surface a capture time. For arbitrary files, this
+	// IS the capture signal — the file's mtime is when its content
+	// was last meaningfully changed, which is the closest analogue
+	// to "captured". Skipped for snippets (handled at the caller
+	// where the row's CreatedAt is the snippet's own creation time)
+	// and emails (handled by header parsing).
+	if item.CapturedAt == nil &&
+		(item.Type == model.TypeImage || item.Type == model.TypeFile) {
+		if info, statErr := os.Stat(absPath); statErr == nil {
+			t := info.ModTime().UTC()
+			item.CapturedAt = &t
 		}
 	}
 

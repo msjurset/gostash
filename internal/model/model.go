@@ -50,6 +50,14 @@ type Item struct {
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	// CapturedAt is when the underlying content was created in the
+	// real world — EXIF DateTimeOriginal for photos, filesystem
+	// birth/mtime for arbitrary files, the most recent thread Date
+	// header for emails, the row's own CreatedAt for snippets. NULL
+	// for URL items (no reliable capture signal). Distinct from
+	// CreatedAt, which is when the row landed in this stash —
+	// consumers like Moments clustering prefer CapturedAt when set.
+	CapturedAt    *time.Time      `json:"captured_at,omitempty"`
 	Archived      bool            `json:"archived,omitempty"`
 	Location      *Location       `json:"location,omitempty"`
 	Tags          []Tag           `json:"tags,omitempty"`

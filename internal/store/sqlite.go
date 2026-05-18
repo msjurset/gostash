@@ -104,8 +104,35 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemFiles(); err != nil {
 		return fmt.Errorf("migrate item_files: %w", err)
 	}
+	if err := s.migrateItemCapturedAt(); err != nil {
+		return fmt.Errorf("migrate items.captured_at: %w", err)
+	}
 
 	return nil
+}
+
+// migrateItemCapturedAt adds the optional captured_at column that
+// records when the underlying content was created in the real world
+// — e.g. when a photo was shot (from EXIF DateTimeOriginal), when a
+// file was last modified on disk before stashing, when an email's
+// most recent thread reply was sent. Distinct from items.created_at,
+// which records when the row was inserted into the stash. NULL means
+// "no signal available" (URL items, items where EXIF couldn't be
+// read, etc.) — consumers like trip clustering fall back to
+// created_at in that case. Idempotent.
+func (s *SQLiteStore) migrateItemCapturedAt() error {
+	if err := s.addColumnIfMissing("items", "captured_at",
+		`ALTER TABLE items ADD COLUMN captured_at TIMESTAMP`); err != nil {
+		return err
+	}
+	// Partial index — most non-image, non-file items will have NULL
+	// captured_at forever. Index only the populated rows so range
+	// queries (e.g. moments clustering) stay cheap.
+	_, err := s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_items_captured_at
+		 ON items(captured_at) WHERE captured_at IS NOT NULL`,
+	)
+	return err
 }
 
 // migrateItemFiles introduces the item_files sidecar table that
@@ -365,15 +392,16 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 	}
 
 	lat, lon, locSrc := splitLocation(item.Location)
+	captured := ptrToNullTime(item.CapturedAt)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO items (id, type, title, url, notes, source_path, store_path,
 			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at,
-			thumbnail_path, latitude, longitude, location_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			thumbnail_path, latitude, longitude, location_source, captured_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
 		item.FileSize, meta, item.CreatedAt, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc,
+		lat, lon, locSrc, captured,
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -583,15 +611,16 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 	item.UpdatedAt = time.Now().UTC()
 
 	lat, lon, locSrc := splitLocation(item.Location)
+	captured := ptrToNullTime(item.CapturedAt)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
-			thumbnail_path=?, latitude=?, longitude=?, location_source=?
+			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
 		meta, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc, item.ID,
+		lat, lon, locSrc, captured, item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)
@@ -996,12 +1025,14 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	var archived int
 	var lat, lon sql.NullFloat64
 	var locSrc sql.NullString
+	var capturedAt sql.NullTime
 	err := row.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 		&archived, &item.ThumbnailPath,
 		&lat, &lon, &locSrc,
+		&capturedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1009,6 +1040,7 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	item.Metadata = json.RawMessage(meta)
 	item.Archived = archived != 0
 	item.Location = buildLocation(lat, lon, locSrc)
+	item.CapturedAt = nullTimeToPtr(capturedAt)
 	return &item, nil
 }
 
@@ -1020,12 +1052,14 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		var archived int
 		var lat, lon sql.NullFloat64
 		var locSrc sql.NullString
+		var capturedAt sql.NullTime
 		err := rows.Scan(
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 			&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 			&archived, &item.ThumbnailPath,
 			&lat, &lon, &locSrc,
+			&capturedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
@@ -1033,9 +1067,30 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		item.Metadata = json.RawMessage(meta)
 		item.Archived = archived != 0
 		item.Location = buildLocation(lat, lon, locSrc)
+		item.CapturedAt = nullTimeToPtr(capturedAt)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// nullTimeToPtr lifts a sql.NullTime into the *time.Time the model
+// uses for CapturedAt. NULL in the DB → nil pointer → JSON encoder
+// omits the field. Mirrors buildLocation's role for the optional
+// Location field.
+func nullTimeToPtr(t sql.NullTime) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
+}
+
+// ptrToNullTime is the inverse — for INSERT/UPDATE binding.
+func ptrToNullTime(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
 }
 
 // splitLocation flattens a *Location into the three SQL parameters

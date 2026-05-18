@@ -9,6 +9,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding"
@@ -34,6 +35,7 @@ func (e *EmailExtractor) Extract(r io.Reader, mimeType string) (*Result, error) 
 	from := decodeHeader(msg.Header.Get("From"))
 	to := decodeHeader(msg.Header.Get("To"))
 	date := msg.Header.Get("Date")
+	capturedAt := mostRecentEmailDate(msg.Header)
 
 	body, err := extractEmailBody(msg)
 	if err != nil {
@@ -61,11 +63,52 @@ func (e *EmailExtractor) Extract(r io.Reader, mimeType string) (*Result, error) 
 	result = strings.ReplaceAll(result, "\r", "\n")
 
 	return &Result{
-		Text:     result,
-		Title:    subject,
-		MimeType: MIMEEmail,
-		Tags:     []string{"email"},
+		Text:       result,
+		Title:      subject,
+		MimeType:   MIMEEmail,
+		Tags:       []string{"email"},
+		CapturedAt: capturedAt,
 	}, nil
+}
+
+// mostRecentEmailDate walks the message's Date + Received headers
+// and returns the newest parseable timestamp. Most mailers stamp
+// the original send time on the Date header; thread replies and
+// forwards accumulate Received: hops with timestamps further in the
+// future. The clustering model wants "when did this email last
+// happen?" — the latest one wins.
+//
+// Returns nil if no header parses cleanly; callers fall back to the
+// row's CreatedAt (or simply leave CapturedAt unset).
+func mostRecentEmailDate(h mail.Header) *time.Time {
+	var best time.Time
+	if d := strings.TrimSpace(h.Get("Date")); d != "" {
+		if t, err := mail.ParseDate(d); err == nil && !t.IsZero() {
+			best = t
+		}
+	}
+	// Received: headers list the SMTP relay hops, each ending with
+	// a timestamp after a ';' separator. Multiple headers stack;
+	// net/mail returns them all via h["Received"].
+	for _, raw := range h["Received"] {
+		idx := strings.LastIndex(raw, ";")
+		if idx < 0 || idx == len(raw)-1 {
+			continue
+		}
+		stamp := strings.TrimSpace(raw[idx+1:])
+		t, err := mail.ParseDate(stamp)
+		if err != nil || t.IsZero() {
+			continue
+		}
+		if t.After(best) {
+			best = t
+		}
+	}
+	if best.IsZero() {
+		return nil
+	}
+	utc := best.UTC()
+	return &utc
 }
 
 func extractEmailBody(msg *mail.Message) (string, error) {

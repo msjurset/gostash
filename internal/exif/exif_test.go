@@ -31,3 +31,19 @@ func TestErrNoGPSWraps(t *testing.T) {
 		t.Errorf("ErrNoGPS should match itself")
 	}
 }
+
+// Same sentinel contract for capture-time: callers errors.Is the
+// "no parseable timestamp" branch to silently fall back to the
+// filesystem signal.
+func TestExtractCaptureTimeNonJPEGFails(t *testing.T) {
+	_, err := ExtractCaptureTime(bytes.NewReader([]byte("not an image")))
+	if err == nil {
+		t.Fatal("expected error for non-jpeg, got nil")
+	}
+}
+
+func TestErrNoCaptureTimeIdentity(t *testing.T) {
+	if !errors.Is(ErrNoCaptureTime, ErrNoCaptureTime) {
+		t.Errorf("ErrNoCaptureTime should match itself")
+	}
+}

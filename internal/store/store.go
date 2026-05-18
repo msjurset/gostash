@@ -70,6 +70,12 @@ type Store interface {
 	// TouchCollection increments view_count for the Frequent sort.
 	// Called by the Mac when the user navigates to a collection.
 	TouchCollection(ctx context.Context, name string) error
+	// MergeCollections folds every membership from `others` into
+	// `survivor` (INSERT OR IGNORE so duplicates collapse), then
+	// deletes the others. Single transaction so a partial failure
+	// rolls back rather than half-merging. survivor must already
+	// exist; missing names in `others` return an error.
+	MergeCollections(ctx context.Context, survivor string, others []string) error
 
 	// Duplicate Dismissal
 	DismissDupePair(ctx context.Context, idA, idB string) error

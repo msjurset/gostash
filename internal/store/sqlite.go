@@ -1002,6 +1002,77 @@ func (s *SQLiteStore) queryCollections(ctx context.Context, q string, args []any
 	return cols, rows.Err()
 }
 
+// MergeCollections folds the memberships of `others` into `survivor`
+// and deletes the merged collections. Items already in survivor stay
+// at their existing positions; merged items append at the end in
+// their original relative order. INSERT OR IGNORE collapses
+// duplicates silently.
+//
+// Single transaction: a mid-merge crash rolls back, never leaves the
+// store with half the items moved and the original collections gone.
+func (s *SQLiteStore) MergeCollections(ctx context.Context, survivor string, others []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var survivorID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM collections WHERE name = ?`, survivor,
+	).Scan(&survivorID); err != nil {
+		return fmt.Errorf("survivor collection %q not found: %w", survivor, err)
+	}
+
+	for _, name := range others {
+		if name == survivor {
+			continue
+		}
+		var mergedID int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id FROM collections WHERE name = ?`, name,
+		).Scan(&mergedID); err != nil {
+			return fmt.Errorf("collection %q not found: %w", name, err)
+		}
+		// Start positions for the appended items at the end of
+		// the survivor's existing curated order. COALESCE keeps
+		// the math right when the survivor is empty.
+		var nextPos int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(position), -1) + 1
+			 FROM item_collections WHERE collection_id = ?`,
+			survivorID,
+		).Scan(&nextPos); err != nil {
+			return fmt.Errorf("survivor next position: %w", err)
+		}
+		// Fold rows in original-position order. ROW_NUMBER()
+		// preserves relative ordering; INSERT OR IGNORE drops
+		// rows where (item_id, survivor_id) already exists.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO item_collections
+				(item_id, collection_id, position, added_at)
+			SELECT item_id,
+			       ?,
+			       ? + (ROW_NUMBER() OVER (ORDER BY position)) - 1,
+			       added_at
+			FROM item_collections
+			WHERE collection_id = ?
+		`, survivorID, nextPos, mergedID); err != nil {
+			return fmt.Errorf("fold items from %q: %w", name, err)
+		}
+		// Drop the merged collection. The ON DELETE CASCADE on
+		// item_collections.collection_id removes the now-orphan
+		// membership rows.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM collections WHERE id = ?`, mergedID,
+		); err != nil {
+			return fmt.Errorf("delete %q: %w", name, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // TouchCollection bumps the view_count column. Called from the Mac
 // sidebar when the user navigates to a collection so the "Frequent"
 // sort reflects actual usage. Idempotent on missing names — silent

@@ -240,6 +240,17 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	// Capture time + camera info from EXIF — same flow as the CLI
+	// ingest path. Skipped when the bytes don't decode as EXIF.
+	if item.Type == model.TypeImage {
+		if t, err := exif.ExtractCaptureTime(bytes.NewReader(buf.Bytes())); err == nil && !t.IsZero() {
+			utc := t.UTC()
+			item.CapturedAt = &utc
+		}
+		if cam, err := exif.ExtractCamera(bytes.NewReader(buf.Bytes())); err == nil && cam.HasAny() {
+			item.Metadata = mergeCameraMetadata(item.Metadata, cam)
+		}
+	}
 
 	if err := s.Store.CreateItem(r.Context(), item); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -682,4 +693,25 @@ func ShutdownWithGrace(ctx context.Context, srv *http.Server) error {
 		return err
 	}
 	return nil
+}
+
+// mergeCameraMetadata writes a Camera struct into an item's
+// metadata JSON under the "camera" key, preserving any other keys
+// already present. Same shape as the helper of the same name in
+// internal/stash so the on-disk metadata schema stays consistent
+// regardless of which ingest path created the row.
+func mergeCameraMetadata(existing json.RawMessage, cam exif.Camera) json.RawMessage {
+	var m map[string]any
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &m)
+	}
+	if m == nil {
+		m = make(map[string]any)
+	}
+	m["camera"] = cam
+	out, err := json.Marshal(m)
+	if err != nil {
+		return existing
+	}
+	return out
 }

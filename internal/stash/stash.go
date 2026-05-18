@@ -309,6 +309,16 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 			}
 			exifFile.Close()
 		}
+		// Camera-info pass — Make/Model + aperture / shutter /
+		// focal / ISO / dimensions. Merged into items.metadata
+		// under the "camera" key so the Mac detail view can
+		// surface it. HasAny() skips writing an all-empty object.
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if cam, ccErr := exif.ExtractCamera(exifFile); ccErr == nil && cam.HasAny() {
+				item.Metadata = mergeCameraMetadata(item.Metadata, cam)
+			}
+			exifFile.Close()
+		}
 	}
 
 	// Filesystem-time fallback. For images, only kick in when EXIF
@@ -451,4 +461,30 @@ func addSuggestedTags(item *model.Item) {
 			item.Tags = append(item.Tags, model.Tag{Name: st})
 		}
 	}
+}
+
+// mergeCameraMetadata writes the camera-info struct into the item's
+// metadata JSON under the "camera" key, preserving any other keys
+// already present (e.g. detected language). Returns the updated
+// raw-JSON bytes ready to assign to item.Metadata. On any
+// unmarshal failure we fall back to a fresh single-key payload so
+// the camera info isn't silently lost.
+func mergeCameraMetadata(existing json.RawMessage, cam exif.Camera) json.RawMessage {
+	var m map[string]any
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &m)
+	}
+	if m == nil {
+		m = make(map[string]any)
+	}
+	m["camera"] = cam
+	out, err := json.Marshal(m)
+	if err != nil {
+		// Defensive fallback — shouldn't happen since Camera +
+		// map[string]any are both encodable, but if it ever
+		// does we'd rather strand the camera than drop the
+		// whole metadata payload.
+		return existing
+	}
+	return out
 }

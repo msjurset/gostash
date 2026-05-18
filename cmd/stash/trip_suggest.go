@@ -197,13 +197,18 @@ type TripSuggestion struct {
 
 // TripItemPreview is the minimal subset of an item the trip-suggest
 // UI needs to draw a filmstrip and let the user verify the cluster
-// before accepting. Thumbnail path is relative to the files dir
-// (same convention as Item.ThumbnailPath).
+// before accepting. ThumbnailPath is relative to the files dir (same
+// convention as Item.ThumbnailPath); StorePath is the content-hashed
+// blob path used by the UI as a fallback when a thumbnail hasn't been
+// generated yet — for image items, rendering the full blob looks
+// fine at small tile sizes and avoids a "🖼️ everywhere" placeholder
+// fog on older captures that pre-date thumbnail-backfill.
 type TripItemPreview struct {
 	ID            string `json:"id"`
 	Title         string `json:"title,omitempty"`
 	Type          string `json:"type,omitempty"`
 	ThumbnailPath string `json:"thumbnail_path,omitempty"`
+	StorePath     string `json:"store_path,omitempty"`
 }
 
 type tripParams struct {
@@ -280,6 +285,7 @@ func scoreCluster(c []model.Item) TripSuggestion {
 			Title:         it.Title,
 			Type:          string(it.Type),
 			ThumbnailPath: it.ThumbnailPath,
+			StorePath:     it.StorePath,
 		})
 	}
 	s.SharedTags = computeSharedTags(c)

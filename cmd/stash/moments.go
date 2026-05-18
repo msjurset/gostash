@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -58,13 +61,47 @@ func init() {
 	momentsCmd.Flags().Bool("all", false, "Scan the whole stash instead of the recent window")
 	momentsCmd.Flags().Int("min-items", 3, "Smallest cluster size to surface")
 	momentsCmd.Flags().Int("limit", 20, "Maximum number of suggestions to emit (highest-scored first)")
+	momentsCmd.Flags().Bool("include-dismissed", false, "Don't filter out clusters the user has dismissed")
 
 	momentsAcceptCmd.Flags().StringP("name", "n", "", "Collection name (required)")
 	momentsAcceptCmd.Flags().StringP("description", "d", "", "Optional collection description")
 	_ = momentsAcceptCmd.MarkFlagRequired("name")
 
 	momentsCmd.AddCommand(momentsAcceptCmd)
+	momentsCmd.AddCommand(momentsDismissCmd)
+	momentsCmd.AddCommand(momentsUndismissCmd)
+	momentsCmd.AddCommand(momentsDismissedCmd)
 	rootCmd.AddCommand(momentsCmd)
+}
+
+var momentsDismissCmd = &cobra.Command{
+	Use:   "dismiss ID...",
+	Short: "Hide a Moment suggestion from future runs",
+	Long: `Mark a cluster as user-rejected so it stops appearing in
+subsequent `+"`stash moments`"+` output. Provide every item ID in the
+cluster — the signature is the SHA-256 of the sorted ID set, so it
+only matches that EXACT cluster shape. If the cluster later changes
+(items added / removed), the new shape gets a new signature and
+re-surfaces — that's intentional, so a dismissal doesn't permanently
+hide every overlapping cluster.
+
+Show what's currently hidden with `+"`stash moments dismissed`"+`;
+un-hide one with `+"`stash moments undismiss <signature>`"+`.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runMomentsDismiss,
+}
+
+var momentsUndismissCmd = &cobra.Command{
+	Use:   "undismiss SIGNATURE",
+	Short: "Re-surface a previously-dismissed Moment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runMomentsUndismiss,
+}
+
+var momentsDismissedCmd = &cobra.Command{
+	Use:   "dismissed",
+	Short: "List Moments the user has dismissed",
+	RunE:  runMomentsDismissed,
 }
 
 func runMoments(cmd *cobra.Command, _ []string) error {
@@ -74,6 +111,7 @@ func runMoments(cmd *cobra.Command, _ []string) error {
 	scanAll, _ := cmd.Flags().GetBool("all")
 	minItems, _ := cmd.Flags().GetInt("min-items")
 	limit, _ := cmd.Flags().GetInt("limit")
+	includeDismissed, _ := cmd.Flags().GetBool("include-dismissed")
 
 	s, err := openStore()
 	if err != nil {
@@ -91,11 +129,17 @@ func runMoments(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	dismissed, err := s.DismissedMomentSignatures(ctx)
+	if err != nil {
+		return fmt.Errorf("load dismissed moments: %w", err)
+	}
 
 	suggestions := buildSuggestions(items, momentParams{
-		MaxGap:   maxGap,
-		MaxSpan:  maxSpan,
-		MinItems: minItems,
+		MaxGap:              maxGap,
+		MaxSpan:             maxSpan,
+		MinItems:            minItems,
+		DismissedSignatures: dismissed,
+		IncludeDismissed:    includeDismissed,
 	})
 	// Sort by score descending, then start time descending so the
 	// most-recent / strongest trips bubble to the top.
@@ -176,27 +220,127 @@ func runMomentsAccept(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runMomentsDismiss(cmd *cobra.Command, args []string) error {
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Reuse the same signature function the suggestion engine
+	// uses so dismissals computed via this CLI path match what
+	// the Mac UI would produce.
+	previews := make([]MomentItemPreview, len(args))
+	for i, id := range args {
+		previews[i] = MomentItemPreview{ID: id}
+	}
+	signature := momentSignature(previews)
+
+	// Best-effort: grab the first item's title so the
+	// dismissed-list UI has something human to display. Errors
+	// here are not fatal — we'd rather record the dismissal with
+	// an empty title than fail when one of the IDs has been
+	// archived.
+	var sampleTitle string
+	if first, ferr := s.GetItem(ctx, args[0]); ferr == nil && first != nil {
+		sampleTitle = first.Title
+	}
+
+	if err := s.DismissMoment(ctx, signature, len(args), sampleTitle); err != nil {
+		return fmt.Errorf("dismiss: %w", err)
+	}
+	if flagJSON {
+		printJSON(map[string]any{
+			"signature":    signature,
+			"item_count":   len(args),
+			"sample_title": sampleTitle,
+		})
+		return nil
+	}
+	fmt.Printf("✓ Dismissed Moment %s (%d items, sample: %s)\n",
+		signature[:12], len(args), sampleTitle)
+	return nil
+}
+
+func runMomentsUndismiss(cmd *cobra.Command, args []string) error {
+	signature := args[0]
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if err := s.UndismissMoment(context.Background(), signature); err != nil {
+		return fmt.Errorf("undismiss: %w", err)
+	}
+	if flagJSON {
+		printJSON(map[string]any{"signature": signature, "undismissed": true})
+		return nil
+	}
+	fmt.Printf("✓ Un-dismissed Moment %s\n", signature[:min(12, len(signature))])
+	return nil
+}
+
+func runMomentsDismissed(cmd *cobra.Command, _ []string) error {
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	rows, err := s.ListDismissedMoments(context.Background())
+	if err != nil {
+		return err
+	}
+	if flagJSON {
+		printJSONSlice(rows)
+		return nil
+	}
+	if len(rows) == 0 {
+		fmt.Println("No Moments are currently dismissed.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SIGNATURE\tITEMS\tDISMISSED AT\tSAMPLE TITLE")
+	for _, dm := range rows {
+		short := dm.Signature
+		if len(short) > 16 {
+			short = short[:16]
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
+			short,
+			dm.ItemCount,
+			dm.DismissedAt.Local().Format("2006-01-02 15:04"),
+			strings.TrimSpace(dm.SampleTitle),
+		)
+	}
+	return w.Flush()
+}
+
 // ───────────────────────────────────────────────────────────
 // Pure suggestion engine (tested standalone)
 // ───────────────────────────────────────────────────────────
 
-// MomentSuggestion is the unit returned by `stash trip-suggest`. JSON
+// MomentSuggestion is the unit returned by `stash moments`. JSON
 // shape is the contract for the Mac UI / scripts.
 //
 // `Items` carries enough per-item context (id, title, thumbnail path,
 // type) for a UI to render a filmstrip preview without a second
 // round trip per item. Callers needing only the ID list (e.g. piping
-// into `accept`) can map across this slice.
+// into `accept`) can map across this slice. `Signature` is the
+// stable cluster-identity hash used by the dismissal table — pass
+// it to `stash moments undismiss <signature>` to surface a cluster
+// the user previously hid.
 type MomentSuggestion struct {
-	Start          time.Time         `json:"start"`
-	End            time.Time         `json:"end"`
-	ItemCount      int               `json:"item_count"`
+	Start          time.Time           `json:"start"`
+	End            time.Time           `json:"end"`
+	ItemCount      int                 `json:"item_count"`
 	Items          []MomentItemPreview `json:"items"`
-	SuggestedName  string            `json:"suggested_name"`
-	Score          float64           `json:"score"`
-	SharedTags     []string          `json:"shared_tags,omitempty"`
-	LocationCenter *model.Location   `json:"location_center,omitempty"`
-	LocationCount  int               `json:"location_count,omitempty"`
+	SuggestedName  string              `json:"suggested_name"`
+	Score          float64             `json:"score"`
+	SharedTags     []string            `json:"shared_tags,omitempty"`
+	LocationCenter *model.Location     `json:"location_center,omitempty"`
+	LocationCount  int                 `json:"location_count,omitempty"`
+	Signature      string              `json:"signature"`
 }
 
 // MomentItemPreview is the minimal subset of an item the trip-suggest
@@ -219,6 +363,15 @@ type momentParams struct {
 	MaxGap   time.Duration
 	MaxSpan  time.Duration
 	MinItems int
+	// DismissedSignatures lists clusters the user has explicitly
+	// hidden — keyed by momentSignature. nil means "no filter."
+	// Populated by the cobra wrapper from the store; the pure
+	// pipeline stays trivially testable by passing a custom set.
+	DismissedSignatures map[string]bool
+	// IncludeDismissed flips off the dismissed filter regardless
+	// of DismissedSignatures — backs the `--include-dismissed`
+	// flag for inspecting the full set.
+	IncludeDismissed bool
 }
 
 // buildSuggestions is the pure pipeline: items → clusters → filtered
@@ -240,9 +393,34 @@ func buildSuggestions(items []model.Item, p momentParams) []MomentSuggestion {
 			// --all.
 			continue
 		}
-		out = append(out, scoreCluster(c))
+		sug := scoreCluster(c)
+		if !p.IncludeDismissed && p.DismissedSignatures[sug.Signature] {
+			continue
+		}
+		out = append(out, sug)
 	}
 	return out
+}
+
+// momentSignature returns the stable cluster identity backing
+// dismissals: SHA-256 of the items' sorted IDs. Adding or removing
+// an item from a cluster produces a different signature, so a
+// dismissed cluster naturally re-surfaces in modified form rather
+// than staying hidden forever.
+func momentSignature(items []MomentItemPreview) string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	sort.Strings(ids)
+	h := sha256.New()
+	for i, id := range ids {
+		if i > 0 {
+			h.Write([]byte{'\n'})
+		}
+		h.Write([]byte(id))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // clusterByTime walks items in chronological order and starts a new
@@ -307,6 +485,7 @@ func scoreCluster(c []model.Item) MomentSuggestion {
 			StorePath:     it.StorePath,
 		})
 	}
+	s.Signature = momentSignature(s.Items)
 	s.SharedTags = computeSharedTags(c)
 	if center, count := computeLocationCenter(c); count > 0 {
 		loc := center

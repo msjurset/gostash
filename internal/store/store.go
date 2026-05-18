@@ -66,6 +66,15 @@ type Store interface {
 	IsDupeDismissed(ctx context.Context, idA, idB string) bool
 	ListDismissedPairs(ctx context.Context) ([][2]string, error)
 
+	// Moments dismissal — suppress specific cluster suggestions so
+	// they don't keep re-appearing in `stash moments`. Signature is
+	// caller-computed (SHA-256 of sorted item IDs).
+	DismissMoment(ctx context.Context, signature string, itemCount int, sampleTitle string) error
+	UndismissMoment(ctx context.Context, signature string) error
+	IsMomentDismissed(ctx context.Context, signature string) (bool, error)
+	DismissedMomentSignatures(ctx context.Context) (map[string]bool, error)
+	ListDismissedMoments(ctx context.Context) ([]model.DismissedMoment, error)
+
 	// Saved Searches
 	SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter, live bool) error
 	ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error)

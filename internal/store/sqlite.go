@@ -107,8 +107,29 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemCapturedAt(); err != nil {
 		return fmt.Errorf("migrate items.captured_at: %w", err)
 	}
+	if err := s.migrateDismissedMoments(); err != nil {
+		return fmt.Errorf("migrate dismissed_moments: %w", err)
+	}
 
 	return nil
+}
+
+// migrateDismissedMoments backs the user's "I don't want this
+// cluster" votes on Moments suggestions. The signature column is
+// SHA-256 of the cluster's sorted item-ID set — stable across
+// recomputes so dismissals survive across CLI/UI sessions, but
+// changes when the underlying item set does (so removing an item
+// from the cluster naturally re-surfaces the new shape). Idempotent.
+func (s *SQLiteStore) migrateDismissedMoments() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS dismissed_moments (
+			signature    TEXT PRIMARY KEY,
+			dismissed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			item_count   INTEGER  NOT NULL,
+			sample_title TEXT     NOT NULL DEFAULT ''
+		)
+	`)
+	return err
 }
 
 // migrateItemCapturedAt adds the optional captured_at column that
@@ -1433,6 +1454,90 @@ func (s *SQLiteStore) ListDismissedPairs(ctx context.Context) ([][2]string, erro
 		pairs = append(pairs, [2]string{a, b})
 	}
 	return pairs, rows.Err()
+}
+
+// DismissMoment records the cluster signature as user-rejected.
+// Idempotent — re-dismissing refreshes the timestamp + sample
+// title but doesn't fail. Tiny rows; no GC needed.
+func (s *SQLiteStore) DismissMoment(ctx context.Context, signature string, itemCount int, sampleTitle string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO dismissed_moments (signature, item_count, sample_title)
+		VALUES (?, ?, ?)
+		ON CONFLICT(signature) DO UPDATE SET
+			dismissed_at = CURRENT_TIMESTAMP,
+			item_count = excluded.item_count,
+			sample_title = excluded.sample_title
+	`, signature, itemCount, sampleTitle)
+	return err
+}
+
+// UndismissMoment removes a dismissal so the cluster can re-surface
+// the next time its signature matches.
+func (s *SQLiteStore) UndismissMoment(ctx context.Context, signature string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM dismissed_moments WHERE signature = ?`,
+		signature,
+	)
+	return err
+}
+
+// IsMomentDismissed returns true if the signature has been
+// dismissed. Used inline by the suggestion engine to skip
+// already-dismissed clusters; for batch lookups, prefer
+// DismissedMomentSignatures.
+func (s *SQLiteStore) IsMomentDismissed(ctx context.Context, signature string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM dismissed_moments WHERE signature = ?`,
+		signature,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// DismissedMomentSignatures returns every dismissed signature as a
+// hashset for O(1) lookups during a single suggestion-build pass.
+func (s *SQLiteStore) DismissedMomentSignatures(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT signature FROM dismissed_moments`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var sig string
+		if err := rows.Scan(&sig); err != nil {
+			return nil, err
+		}
+		out[sig] = true
+	}
+	return out, rows.Err()
+}
+
+// ListDismissedMoments returns the dismissal table for surfacing in
+// a "Show dismissed" view. Newest first so the user sees their most
+// recent vetoes when undoing.
+func (s *SQLiteStore) ListDismissedMoments(ctx context.Context) ([]model.DismissedMoment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT signature, dismissed_at, item_count, sample_title
+		FROM dismissed_moments
+		ORDER BY dismissed_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.DismissedMoment
+	for rows.Next() {
+		var dm model.DismissedMoment
+		if err := rows.Scan(&dm.Signature, &dm.DismissedAt, &dm.ItemCount, &dm.SampleTitle); err != nil {
+			return nil, err
+		}
+		out = append(out, dm)
+	}
+	return out, rows.Err()
 }
 
 // SaveSearch persists a named search query and filter. `live` flips

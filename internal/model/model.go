@@ -98,6 +98,19 @@ type Location struct {
 	Source string  `json:"source,omitempty"`
 }
 
+// DismissedMoment is a Moments suggestion the user has explicitly
+// turned away. Signature is a stable hash of the cluster's item set
+// (sorted item IDs, SHA-256) so dismissals survive across recomputes
+// but adapt when the underlying items change. SampleTitle is just
+// the first item's title — surfaced in the dismissed-list UI so the
+// user can recognize the cluster they're un-dismissing.
+type DismissedMoment struct {
+	Signature   string    `json:"signature"`
+	DismissedAt time.Time `json:"dismissed_at"`
+	ItemCount   int       `json:"item_count"`
+	SampleTitle string    `json:"sample_title,omitempty"`
+}
+
 // Tag is a label applied to items.
 type Tag struct {
 	ID    int64  `json:"id"`

@@ -328,6 +328,60 @@ func TestBuildSuggestions_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestMomentSignatureIsOrderIndependent(t *testing.T) {
+	a := []MomentItemPreview{{ID: "x"}, {ID: "y"}, {ID: "z"}}
+	b := []MomentItemPreview{{ID: "z"}, {ID: "x"}, {ID: "y"}}
+	c := []MomentItemPreview{{ID: "x"}, {ID: "y"}}
+	if momentSignature(a) != momentSignature(b) {
+		t.Error("signature should be order-independent")
+	}
+	if momentSignature(a) == momentSignature(c) {
+		t.Error("removing an item must change the signature")
+	}
+}
+
+func TestBuildSuggestions_RespectsDismissedSignatures(t *testing.T) {
+	base := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
+	items := []model.Item{
+		{ID: "1", CreatedAt: base},
+		{ID: "2", CreatedAt: base.Add(time.Hour)},
+		{ID: "3", CreatedAt: base.Add(2 * time.Hour)},
+	}
+	// First build with no dismissals — should surface the cluster.
+	got := buildSuggestions(items, momentParams{
+		MaxGap:   6 * time.Hour,
+		MaxSpan:  5 * 24 * time.Hour,
+		MinItems: 3,
+	})
+	if len(got) != 1 {
+		t.Fatalf("baseline: expected 1 suggestion, got %d", len(got))
+	}
+	sig := got[0].Signature
+
+	// Now dismiss it — the same input should produce zero output.
+	got = buildSuggestions(items, momentParams{
+		MaxGap:              6 * time.Hour,
+		MaxSpan:             5 * 24 * time.Hour,
+		MinItems:            3,
+		DismissedSignatures: map[string]bool{sig: true},
+	})
+	if len(got) != 0 {
+		t.Errorf("dismissed cluster should be filtered, got %d", len(got))
+	}
+
+	// IncludeDismissed flips the filter back off.
+	got = buildSuggestions(items, momentParams{
+		MaxGap:              6 * time.Hour,
+		MaxSpan:             5 * 24 * time.Hour,
+		MinItems:            3,
+		DismissedSignatures: map[string]bool{sig: true},
+		IncludeDismissed:    true,
+	})
+	if len(got) != 1 {
+		t.Errorf("--include-dismissed should re-surface, got %d", len(got))
+	}
+}
+
 func TestBuildSuggestions_DropsAlreadyCollected(t *testing.T) {
 	base := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
 	col := []model.Collection{{Name: "Pawleys-2026-05"}}

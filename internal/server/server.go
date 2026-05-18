@@ -240,12 +240,24 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	// Client-sent captured_at form field is authoritative when
+	// present — it covers the case where the share pipeline
+	// strips EXIF before the upload reaches us. Falls through to
+	// our own EXIF extraction otherwise. RFC3339 / ISO-8601 UTC.
+	if raw := r.FormValue("captured_at"); raw != "" {
+		if t, perr := time.Parse(time.RFC3339, raw); perr == nil && !t.IsZero() {
+			utc := t.UTC()
+			item.CapturedAt = &utc
+		}
+	}
 	// Capture time + camera info from EXIF — same flow as the CLI
 	// ingest path. Skipped when the bytes don't decode as EXIF.
 	if item.Type == model.TypeImage {
-		if t, err := exif.ExtractCaptureTime(bytes.NewReader(buf.Bytes())); err == nil && !t.IsZero() {
-			utc := t.UTC()
-			item.CapturedAt = &utc
+		if item.CapturedAt == nil {
+			if t, err := exif.ExtractCaptureTime(bytes.NewReader(buf.Bytes())); err == nil && !t.IsZero() {
+				utc := t.UTC()
+				item.CapturedAt = &utc
+			}
 		}
 		if cam, err := exif.ExtractCamera(bytes.NewReader(buf.Bytes())); err == nil && cam.HasAny() {
 			item.Metadata = mergeCameraMetadata(item.Metadata, cam)

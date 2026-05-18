@@ -26,6 +26,35 @@ var ErrNoGPS = errors.New("exif: no GPS tags")
 // time signal is the standard recovery, not a real read failure.
 var ErrNoCaptureTime = errors.New("exif: no capture time")
 
+// Orientation reads the EXIF Orientation tag, defaulting to 1
+// (no transform) when absent or unparseable. Callers should pass
+// the same byte buffer they decode the image from.
+//
+// Values follow the EXIF spec:
+//   1 = normal (no transform)
+//   2 = mirror horizontal
+//   3 = rotate 180
+//   4 = mirror vertical
+//   5 = mirror horizontal + rotate 270 CW (transpose)
+//   6 = rotate 90 CW
+//   7 = mirror horizontal + rotate 90 CW (transverse)
+//   8 = rotate 270 CW (= 90 CCW)
+func Orientation(r io.Reader) int {
+	x, err := exif.Decode(r)
+	if err != nil {
+		return 1
+	}
+	tag, err := x.Get(exif.Orientation)
+	if err != nil {
+		return 1
+	}
+	v, err := tag.Int(0)
+	if err != nil || v < 1 || v > 8 {
+		return 1
+	}
+	return v
+}
+
 // ExtractGPS reads `r` as JPEG/TIFF EXIF and returns lat/lon when
 // present. HEIC and other container formats are not supported by
 // the underlying library — they return a decode error which the

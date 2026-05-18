@@ -25,6 +25,7 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
+	"github.com/msjurset/gostash/internal/exif"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/filestore"
 	"github.com/msjurset/gostash/internal/model"
@@ -164,10 +165,22 @@ func ImportForItem(
 //
 // Returns the encoded bytes and the file extension to use (".jpg").
 func GenerateImageThumbnail(src io.Reader) ([]byte, string, error) {
-	img, _, err := image.Decode(src)
+	// Read once into memory so we can hand the same bytes to both
+	// image.Decode and exif.Orientation. Source images are O(1-10
+	// MB) so a single buffered copy is fine.
+	all, err := io.ReadAll(src)
+	if err != nil {
+		return nil, "", fmt.Errorf("read source: %w", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(all))
 	if err != nil {
 		return nil, "", fmt.Errorf("decode: %w", err)
 	}
+	// EXIF Orientation tag must be applied before resize, otherwise
+	// the saved thumbnail bakes in sensor-orientation pixels and
+	// every downstream consumer renders it sideways. Go's
+	// image.Decode does not honor the tag.
+	img = applyOrientation(img, exif.Orientation(bytes.NewReader(all)))
 	bounds := img.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 	if w <= 0 || h <= 0 {
@@ -359,4 +372,51 @@ func writeThumbnail(
 		return "", fmt.Errorf("update item: %w", err)
 	}
 	return relPath, nil
+}
+
+// applyOrientation rotates / flips img per the EXIF orientation
+// value so the returned image is in upright display order. Pixels
+// are copied via golang.org/x/image/draw — the same backend the
+// resize step uses — so there's no extra dependency. orientation
+// 1 (default / no transform) returns the input unchanged.
+func applyOrientation(img image.Image, orientation int) image.Image {
+	if orientation == 1 {
+		return img
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	// Output dimensions swap for 90/270-degree rotations.
+	var dst *image.NRGBA
+	switch orientation {
+	case 5, 6, 7, 8:
+		dst = image.NewNRGBA(image.Rect(0, 0, h, w))
+	default:
+		dst = image.NewNRGBA(image.Rect(0, 0, w, h))
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := img.At(b.Min.X+x, b.Min.Y+y)
+			var dx, dy int
+			switch orientation {
+			case 2: // mirror horizontal
+				dx, dy = w-1-x, y
+			case 3: // rotate 180
+				dx, dy = w-1-x, h-1-y
+			case 4: // mirror vertical
+				dx, dy = x, h-1-y
+			case 5: // mirror horizontal + rotate 270 CW
+				dx, dy = y, x
+			case 6: // rotate 90 CW
+				dx, dy = h-1-y, x
+			case 7: // mirror horizontal + rotate 90 CW
+				dx, dy = h-1-y, w-1-x
+			case 8: // rotate 270 CW (= 90 CCW)
+				dx, dy = y, w-1-x
+			default:
+				dx, dy = x, y
+			}
+			dst.Set(dx, dy, c)
+		}
+	}
+	return dst
 }

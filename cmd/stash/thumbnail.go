@@ -89,6 +89,7 @@ func init() {
 	thumbnailBackfillCmd.Flags().Int("limit", 0, "Stop after N items (0 = no limit)")
 	thumbnailBackfillCmd.Flags().Bool("dry-run", false, "List candidates without writing thumbnails")
 	thumbnailBackfillCmd.Flags().Bool("images", false, "Backfill image items by downscaling their blobs (instead of URL items)")
+	thumbnailBackfillCmd.Flags().Bool("force", false, "Regenerate thumbnails for items that already have one (e.g. to repair sideways thumbnails after the EXIF-orientation fix)")
 	thumbnailCmd.AddCommand(thumbnailSetCmd)
 	thumbnailCmd.AddCommand(thumbnailImportCmd)
 	thumbnailCmd.AddCommand(thumbnailClearCmd)
@@ -101,6 +102,7 @@ func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
 	limit, _ := cmd.Flags().GetInt("limit")
 	dry, _ := cmd.Flags().GetBool("dry-run")
 	images, _ := cmd.Flags().GetBool("images")
+	force, _ := cmd.Flags().GetBool("force")
 
 	s, err := openStore()
 	if err != nil {
@@ -129,7 +131,12 @@ func runThumbnailBackfill(cmd *cobra.Command, _ []string) error {
 
 	var todo []model.Item
 	for _, it := range items {
-		if it.ThumbnailPath != "" {
+		// --force flips "skip when populated" to "regenerate
+		// regardless." Useful after a pipeline-level fix (e.g. the
+		// EXIF-orientation bug fixed in thumbsync 2026-05-18) where
+		// the existing on-disk thumbnails were generated with the
+		// broken code path and need fresh bytes.
+		if it.ThumbnailPath != "" && !force {
 			continue
 		}
 		if images {

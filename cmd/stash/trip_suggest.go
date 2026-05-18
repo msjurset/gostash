@@ -121,7 +121,7 @@ func runTripSuggest(cmd *cobra.Command, _ []string) error {
 			sug.ItemCount,
 			formatRange(sug.Start, sug.End),
 			sug.SuggestedName,
-			joinShortIDs(sug.ItemIDs),
+			joinShortItemIDs(sug.Items),
 		)
 	}
 	return w.Flush()
@@ -178,16 +178,32 @@ func runTripSuggestAccept(cmd *cobra.Command, args []string) error {
 
 // TripSuggestion is the unit returned by `stash trip-suggest`. JSON
 // shape is the contract for the Mac UI / scripts.
+//
+// `Items` carries enough per-item context (id, title, thumbnail path,
+// type) for a UI to render a filmstrip preview without a second
+// round trip per item. Callers needing only the ID list (e.g. piping
+// into `accept`) can map across this slice.
 type TripSuggestion struct {
-	Start          time.Time       `json:"start"`
-	End            time.Time       `json:"end"`
-	ItemCount      int             `json:"item_count"`
-	ItemIDs        []string        `json:"item_ids"`
-	SuggestedName  string          `json:"suggested_name"`
-	Score          float64         `json:"score"`
-	SharedTags     []string        `json:"shared_tags,omitempty"`
-	LocationCenter *model.Location `json:"location_center,omitempty"`
-	LocationCount  int             `json:"location_count,omitempty"`
+	Start          time.Time         `json:"start"`
+	End            time.Time         `json:"end"`
+	ItemCount      int               `json:"item_count"`
+	Items          []TripItemPreview `json:"items"`
+	SuggestedName  string            `json:"suggested_name"`
+	Score          float64           `json:"score"`
+	SharedTags     []string          `json:"shared_tags,omitempty"`
+	LocationCenter *model.Location   `json:"location_center,omitempty"`
+	LocationCount  int               `json:"location_count,omitempty"`
+}
+
+// TripItemPreview is the minimal subset of an item the trip-suggest
+// UI needs to draw a filmstrip and let the user verify the cluster
+// before accepting. Thumbnail path is relative to the files dir
+// (same convention as Item.ThumbnailPath).
+type TripItemPreview struct {
+	ID            string `json:"id"`
+	Title         string `json:"title,omitempty"`
+	Type          string `json:"type,omitempty"`
+	ThumbnailPath string `json:"thumbnail_path,omitempty"`
 }
 
 type tripParams struct {
@@ -256,10 +272,15 @@ func scoreCluster(c []model.Item) TripSuggestion {
 		Start:     c[0].CreatedAt,
 		End:       c[len(c)-1].CreatedAt,
 		ItemCount: len(c),
-		ItemIDs:   make([]string, 0, len(c)),
+		Items:     make([]TripItemPreview, 0, len(c)),
 	}
 	for _, it := range c {
-		s.ItemIDs = append(s.ItemIDs, it.ID)
+		s.Items = append(s.Items, TripItemPreview{
+			ID:            it.ID,
+			Title:         it.Title,
+			Type:          string(it.Type),
+			ThumbnailPath: it.ThumbnailPath,
+		})
 	}
 	s.SharedTags = computeSharedTags(c)
 	if center, count := computeLocationCenter(c); count > 0 {
@@ -401,10 +422,10 @@ func formatRange(start, end time.Time) string {
 	return fmt.Sprintf("%s → %s", startDay, endDay)
 }
 
-func joinShortIDs(ids []string) string {
-	short := make([]string, len(ids))
-	for i, id := range ids {
-		short[i] = shortID(id)
+func joinShortItemIDs(items []TripItemPreview) string {
+	short := make([]string, len(items))
+	for i, it := range items {
+		short[i] = shortID(it.ID)
 	}
 	if len(short) > 4 {
 		return fmt.Sprintf("%s … (+%d)",

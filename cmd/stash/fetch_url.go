@@ -405,17 +405,17 @@ func stashFetchedBytes(
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	// Detect MIME from server header first (more reliable for
-	// CDNs than sniffing); fall back to sniffing if header is
-	// absent or text/plain (common false negative).
 	mt := strings.ToLower(strings.TrimSpace(strings.SplitN(ctype, ";", 2)[0]))
 	if mt == "" || mt == "application/octet-stream" || mt == "text/plain" {
 		mt = extract.DetectMIME(body, basenameFromURL(srcURL))
 	}
 	item.MimeType = mt
-	if strings.HasPrefix(mt, "image/") {
+	switch {
+	case mt == extract.MIMEEmail:
+		item.Type = model.TypeEmail
+	case strings.HasPrefix(mt, "image/"):
 		item.Type = model.TypeImage
-	} else {
+	default:
 		item.Type = model.TypeFile
 	}
 
@@ -444,6 +444,19 @@ func stashFetchedBytes(
 	// branch never fired and the image was hidden.
 	item.StorePath = hash
 	item.FileSize = size
+
+	// Extract text and metadata
+	result, err := extract.Run(bytes.NewReader(body), mt)
+	if err == nil {
+		item.ExtractedText = result.Text
+		if result.Title != "" && item.Title == "" {
+			item.Title = result.Title
+		}
+		if result.CapturedAt != nil {
+			t := result.CapturedAt.UTC()
+			item.CapturedAt = &t
+		}
+	}
 
 	// SourcePath: synthesize a basename with the right extension when
 	// the URL doesn't carry one (CDN tokens like

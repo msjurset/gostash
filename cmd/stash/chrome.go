@@ -48,6 +48,7 @@ type nativeRequest struct {
 	Collection string   `json:"collection,omitempty"`
 	Query      string   `json:"query,omitempty"`
 	Limit      int      `json:"limit,omitempty"`
+	CapturedAt string   `json:"captured_at,omitempty"`
 
 	// fetch_url_pick: which URLs to download from a previously-listed
 	// page. Either Picks (HTML mode) or URL alone (direct-file mode).
@@ -210,6 +211,24 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 		}
 		item.ExtractedText = result.ExtractedText
 		item.MimeType = result.MimeType
+
+		mt := strings.ToLower(strings.TrimSpace(strings.SplitN(item.MimeType, ";", 2)[0]))
+		switch {
+		case mt == extract.MIMEEmail:
+			item.Type = model.TypeEmail
+			// Email extractor surfaces the most recent message
+			// timestamp from the headers as CapturedAt; other
+			// extractors leave it nil. Honored here before the
+			// optional req.CapturedAt override.
+			run, _ := extract.Run(bytes.NewReader(result.Body), mt)
+			if run != nil && run.CapturedAt != nil {
+				t := run.CapturedAt.UTC()
+				item.CapturedAt = &t
+			}
+		case strings.HasPrefix(mt, "image/"):
+			item.Type = model.TypeImage
+		}
+
 		if len(result.Body) > 0 {
 			hash, size, err := fs.Save(bytes.NewReader(result.Body))
 			if err == nil {
@@ -222,6 +241,15 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 
 	if item.Title == "" {
 		item.Title = req.URL
+	}
+
+	// Override captured_at if provided by the extension (e.g. from
+	// webmail DOM scrape).
+	if req.CapturedAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.CapturedAt); err == nil {
+			utc := t.UTC()
+			item.CapturedAt = &utc
+		}
 	}
 
 	for _, t := range req.Tags {

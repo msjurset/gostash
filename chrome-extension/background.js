@@ -77,10 +77,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     let response;
     switch (info.menuItemId) {
       case "stash-page":
+        let pageCapturedAt = null;
+        try {
+          const scrape = await scrapePageDOM(tab);
+          pageCapturedAt = scrape.page_captured_at;
+        } catch {}
         response = await sendNativeMessage({
           action: "stash_url",
           url: tab.url,
           title: tab.title,
+          captured_at: pageCapturedAt,
         });
         break;
       case "stash-link":
@@ -568,9 +574,36 @@ function collectCandidatesInPage() {
     return a.kind === "image" ? -1 : 1;
   });
 
+  // --- Email Metadata (Gmail / Outlook) ---
+
+  function scrapeEmailDate() {
+    const host = location.hostname;
+    // Gmail: Date sits in the 'span.g3' or similar. Better to look
+    // for the 'datetime' attribute on the time element if present.
+    if (host.includes("mail.google.com")) {
+      // Look for the date/time element in the active message.
+      // This is brittle but works for current Gmail DOM.
+      const timeEl = document.querySelector("span.g3, .g3");
+      if (timeEl && timeEl.title) {
+        // Gmail puts the full RFC 2822 date in the title attribute
+        const d = new Date(timeEl.title);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+    // Outlook: uses aria-label or specific classes
+    if (host.includes("outlook") || host.includes("office.com")) {
+      const timeEl = document.querySelector('[data-automation-id="CommonSecondaryToolbar"] time, .XG5_p');
+      if (timeEl && timeEl.getAttribute("datetime")) {
+        return new Date(timeEl.getAttribute("datetime")).toISOString();
+      }
+    }
+    return null;
+  }
+
   return {
     page_url: location.href,
     page_title: document.title,
+    page_captured_at: scrapeEmailDate(),
     candidates,
   };
 }
@@ -741,6 +774,12 @@ chrome.omnibox.onInputEntered.addListener(async (text, disposition) => {
 // --- Message Handler (from popup / picker / snippet) ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "scrape_dom") {
+    scrapePageDOM(message.tab)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
   if (message.type === "native") {
     sendNativeMessage(message.payload)
       .then(sendResponse)

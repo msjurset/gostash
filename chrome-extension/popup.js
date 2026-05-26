@@ -96,6 +96,17 @@ async function init() {
   pageTitle.textContent = tab.title || "Untitled";
   pageUrl.textContent = tab.url || "";
 
+  // Run DOM scraper to detect email metadata (captured_at)
+  try {
+    const scrape = await chrome.runtime.sendMessage({ type: "scrape_dom", tab });
+    if (scrape && scrape.page_captured_at) {
+      tab.captured_at = scrape.page_captured_at;
+      status.textContent = "Email detected: " + new Date(scrape.page_captured_at).toLocaleString();
+    }
+  } catch (err) {
+    // Non-fatal if scraper fails
+  }
+
   // Grab selected text from the active tab
   try {
     if (tab.url && (tab.url.startsWith("http://") || tab.url.startsWith("https://"))) {
@@ -389,6 +400,7 @@ stashBtn.addEventListener("click", async () => {
         notes: notesInput.value.trim(),
         collection: collectionSelect.value,
         source_url: currentTab.url,
+        captured_at: currentTab.captured_at,
       }
     : {
         action,
@@ -397,6 +409,7 @@ stashBtn.addEventListener("click", async () => {
         tags,
         notes: notesInput.value.trim(),
         collection: collectionSelect.value,
+        captured_at: currentTab.captured_at,
       };
 
   try {

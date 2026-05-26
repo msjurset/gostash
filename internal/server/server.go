@@ -361,6 +361,7 @@ type patchItemBody struct {
 	Tags          *[]string `json:"tags,omitempty"`
 	Collection    *string   `json:"collection,omitempty"`
 	ExtractedText *string   `json:"extracted_text,omitempty"`
+	Archived      *bool     `json:"archived,omitempty"`
 }
 
 // PATCH /items/{id} — partial update of an item's metadata.
@@ -392,6 +393,12 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.ExtractedText != nil {
 		item.ExtractedText = *body.ExtractedText
+	}
+	if body.Archived != nil {
+		if err := s.Store.SetArchived(r.Context(), id, *body.Archived); err != nil {
+			writeError(w, http.StatusInternalServerError, "set archived: "+err.Error())
+			return
+		}
 	}
 	if body.Tags != nil {
 		// Build []model.Tag from the supplied names. UpdateItem's

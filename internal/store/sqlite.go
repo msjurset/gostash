@@ -701,12 +701,12 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
-			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?
+			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?, archived=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
 		meta, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc, captured, string(chatHist), item.ID,
+		lat, lon, locSrc, captured, string(chatHist), item.Archived, item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)

@@ -250,14 +250,15 @@ func (w *Worker) processOne(ctx context.Context, item *model.Item, key string) e
 	defer cancel()
 
 	result, err := w.gem.Identify(callCtx, key, images, gemini.DefaultIdentifyPrompt)
-	if err != nil {
-		return err
-	}
 
-	// Record usage even on parse-empty responses so cost
-	// tracking reflects all paid calls.
+	// Record usage even on parse-empty responses or errors so cost
+	// tracking reflects all paid calls (like safety filter blocks).
 	if result.Model != "" {
 		w.opts.Recorder.Record(result.Model, result.PromptTokens, result.CandidatesTokens)
+	}
+
+	if err != nil {
+		return err
 	}
 
 	// Apply identify result conservatively: never overwrite

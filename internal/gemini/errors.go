@@ -44,10 +44,11 @@ func IsTransient(err error) bool {
 		return false
 	}
 	if errors.Is(err, ErrEmptyResponse) {
-		// Empty response after a 200 — model didn't return
-		// anything we could parse. Retrying might help; might
-		// not. Lean toward retry since it's rare.
-		return true
+		// Empty response after a 200 — model didn't return anything
+		// we could parse (often due to safety filters or malformed
+		// inputs). This costs tokens every time! Do NOT treat as
+		// transient, otherwise the daemon loops infinitely.
+		return false
 	}
 	if errors.Is(err, ErrMissingKey) {
 		return false

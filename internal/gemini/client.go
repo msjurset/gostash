@@ -133,18 +133,23 @@ func (c *Client) Identify(ctx context.Context, apiKey string, images []Image, pr
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return IdentifyResult{}, fmt.Errorf("decoding response: %w (head: %s)", err, truncate(string(respBody), 200))
 	}
-	text := decoded.firstText()
-	if strings.TrimSpace(text) == "" {
-		return IdentifyResult{}, ErrEmptyResponse
-	}
 
-	result := Parse(text)
-	result.Model = model
+	result := IdentifyResult{Model: model}
 	if decoded.UsageMetadata != nil {
 		result.PromptTokens = decoded.UsageMetadata.PromptTokenCount
 		result.CandidatesTokens = decoded.UsageMetadata.CandidatesTokenCount
 		result.TotalTokens = decoded.UsageMetadata.TotalTokenCount
 	}
+
+	text := decoded.firstText()
+	if strings.TrimSpace(text) == "" {
+		return result, ErrEmptyResponse
+	}
+
+	parsed := Parse(text)
+	result.Title = parsed.Title
+	result.Notes = parsed.Notes
+	result.Transcript = parsed.Transcript
 	return result, nil
 }
 
@@ -217,20 +222,19 @@ func (c *Client) Query(ctx context.Context, apiKey string, contextInfo string, i
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return QueryResult{}, fmt.Errorf("decoding response: %w", err)
 	}
-	text := decoded.firstText()
-	if strings.TrimSpace(text) == "" {
-		return QueryResult{}, ErrEmptyResponse
-	}
 
-	res := QueryResult{
-		Answer: text,
-		Model:  model,
-	}
+	res := QueryResult{Model: model}
 	if decoded.UsageMetadata != nil {
 		res.PromptTokens = decoded.UsageMetadata.PromptTokenCount
 		res.CandidatesTokens = decoded.UsageMetadata.CandidatesTokenCount
 	}
 
+	text := decoded.firstText()
+	if strings.TrimSpace(text) == "" {
+		return res, ErrEmptyResponse
+	}
+
+	res.Answer = text
 	return res, nil
 }
 

@@ -369,6 +369,15 @@ func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 			if result.Title != "" && item.Title == "" {
 				item.Title = result.Title
 			}
+			// Email extractor surfaces the most recent message
+			// timestamp from the headers as CapturedAt; other
+			// extractors leave it nil. Honored here before EXIF /
+			// filesystem-time fallbacks since the header is
+			// authoritative for emails.
+			if result.CapturedAt != nil {
+				t := result.CapturedAt.UTC()
+				item.CapturedAt = &t
+			}
 		}
 	}
 

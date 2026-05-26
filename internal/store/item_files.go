@@ -344,6 +344,38 @@ func (s *SQLiteStore) MergeItems(ctx context.Context, targetID string, sourceIDs
 			}
 		}
 
+		// 4b. Extracted text — same append-with-separator treatment
+		//     as notes, but kept in the dedicated extracted_text
+		//     column so the FTS5 index stays coherent and the
+		//     detail-view "Recognized text" / "Transcript" section
+		//     surfaces the combined body. Empty target absorbs
+		//     source's text wholesale; both populated → divider.
+		//     This is the path that lets the user fold an OCR
+		//     snippet (photo of a book passage) or a transcript
+		//     (Recorder voice memo) into an existing item without
+		//     losing the recognized text.
+		var srcET string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT extracted_text FROM items WHERE id = ?`, srcID).Scan(&srcET); err != nil {
+			return nil, fmt.Errorf("read source extracted_text: %w", err)
+		}
+		if strings.TrimSpace(srcET) != "" {
+			var tgtET string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT extracted_text FROM items WHERE id = ?`, targetID).Scan(&tgtET); err != nil {
+				return nil, fmt.Errorf("read target extracted_text: %w", err)
+			}
+			combinedET := strings.TrimSpace(srcET)
+			if strings.TrimSpace(tgtET) != "" {
+				combinedET = strings.TrimRight(tgtET, "\n") + "\n\n---\n\n" + strings.TrimSpace(srcET)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE items SET extracted_text = ?, updated_at = datetime('now') WHERE id = ?
+			`, combinedET, targetID); err != nil {
+				return nil, fmt.Errorf("update target extracted_text: %w", err)
+			}
+		}
+
 		// 5. Delete the source row (cascades to item_files / item_tags).
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM items WHERE id = ?`, srcID); err != nil {

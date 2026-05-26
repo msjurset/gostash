@@ -113,8 +113,19 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateCollectionUsageSignals(); err != nil {
 		return fmt.Errorf("migrate collection usage signals: %w", err)
 	}
+	if err := s.migrateItemChatHistory(); err != nil {
+		return fmt.Errorf("migrate items.chat_history: %w", err)
+	}
 
 	return nil
+}
+
+// migrateItemChatHistory adds the chat_history column to items.
+// Stored as a JSON string. Idempotent.
+func (s *SQLiteStore) migrateItemChatHistory() error {
+	return s.addColumnIfMissing("items", "chat_history",
+		`ALTER TABLE items ADD COLUMN chat_history TEXT NOT NULL DEFAULT '[]'`,
+	)
 }
 
 // migrateCollectionUsageSignals adds the two columns that back the
@@ -416,9 +427,10 @@ func prefixQuery(q string) string {
 	cleaned := ftsSanitize(q)
 	words := strings.Fields(cleaned)
 	for i, w := range words {
-		if !strings.HasSuffix(w, "*") {
-			words[i] = w + "*"
-		}
+		// Wrap in quotes so leading hyphens or other FTS5 special chars
+		// don't trigger "no such column" or operator errors. FTS5
+		// supports the "term"* syntax for prefix matches.
+		words[i] = fmt.Sprintf("\"%s\"*", w)
 	}
 	return strings.Join(words, " ")
 }
@@ -455,17 +467,22 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 		return err
 	}
 
+	chatHist, err := json.Marshal(item.ChatHistory)
+	if err != nil {
+		chatHist = []byte("[]")
+	}
+
 	lat, lon, locSrc := splitLocation(item.Location)
 	captured := ptrToNullTime(item.CapturedAt)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO items (id, type, title, url, notes, source_path, store_path,
 			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at,
-			thumbnail_path, latitude, longitude, location_source, captured_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			thumbnail_path, latitude, longitude, location_source, captured_at, chat_history)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
 		item.FileSize, meta, item.CreatedAt, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc, captured,
+		lat, lon, locSrc, captured, string(chatHist),
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -674,17 +691,22 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 
 	item.UpdatedAt = time.Now().UTC()
 
+	chatHist, err := json.Marshal(item.ChatHistory)
+	if err != nil {
+		chatHist = []byte("[]")
+	}
+
 	lat, lon, locSrc := splitLocation(item.Location)
 	captured := ptrToNullTime(item.CapturedAt)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
-			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?
+			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
 		meta, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc, captured, item.ID,
+		lat, lon, locSrc, captured, string(chatHist), item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)
@@ -1230,13 +1252,14 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	var lat, lon sql.NullFloat64
 	var locSrc sql.NullString
 	var capturedAt sql.NullTime
+	var chatHistoryStr string
 	err := row.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 		&archived, &item.ThumbnailPath,
 		&lat, &lon, &locSrc,
-		&capturedAt,
+		&capturedAt, &chatHistoryStr,
 	)
 	if err != nil {
 		return nil, err
@@ -1245,6 +1268,9 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	item.Archived = archived != 0
 	item.Location = buildLocation(lat, lon, locSrc)
 	item.CapturedAt = nullTimeToPtr(capturedAt)
+	if chatHistoryStr != "" {
+		_ = json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory)
+	}
 	return &item, nil
 }
 
@@ -1257,13 +1283,14 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		var lat, lon sql.NullFloat64
 		var locSrc sql.NullString
 		var capturedAt sql.NullTime
+		var chatHistoryStr string
 		err := rows.Scan(
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 			&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 			&archived, &item.ThumbnailPath,
 			&lat, &lon, &locSrc,
-			&capturedAt,
+			&capturedAt, &chatHistoryStr,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
@@ -1272,6 +1299,9 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		item.Archived = archived != 0
 		item.Location = buildLocation(lat, lon, locSrc)
 		item.CapturedAt = nullTimeToPtr(capturedAt)
+		if chatHistoryStr != "" {
+			_ = json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory)
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -2027,6 +2057,39 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*model.StashStats, error) {
 	}
 
 	return st, nil
+}
+
+func (s *SQLiteStore) RebuildFTS(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "INSERT INTO items_fts(items_fts) VALUES('rebuild')")
+	return err
+}
+
+func (s *SQLiteStore) AllReferencedHashes(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT content_hash FROM items WHERE content_hash != ''
+		UNION
+		SELECT content_hash FROM item_files WHERE content_hash != ''
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hashes []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, h)
+	}
+	return hashes, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteOrphanedFiles(ctx context.Context) (int, error) {
+	// Identification of orphans requires the FileStore which is not owned
+	// by the Store struct. The logic should live in internal/stash
+	// or the cmd layer where both are available.
+	return 0, fmt.Errorf("DeleteOrphanedFiles not implemented in store layer")
 }
 
 func marshalMeta(data json.RawMessage) (string, error) {

@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +20,9 @@ import (
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
 	"github.com/msjurset/gostash/internal/thumbsync"
+	"github.com/msjurset/gostash/internal/credentials"
+	"github.com/msjurset/gostash/internal/gemini"
+	"github.com/msjurset/gostash/internal/identify"
 )
 
 // Server wires the HTTP API to a Store + FileStore. The struct is
@@ -28,6 +34,14 @@ type Server struct {
 	Token         string
 	NewItemID     func() string
 	NewSnippetID  func() string
+	// UsageLedgerPath is the absolute path to the daemon's Gemini
+	// usage JSON file (typically ~/.stash/gemini-usage.json). When
+	// set, `GET /gemini-usage` serves its contents; when empty or
+	// missing, the endpoint returns an empty snapshot. Surfacing
+	// the daemon's spend so Mac + Android UIs can fold it into
+	// their per-device totals without each running its own ledger.
+	UsageLedgerPath string
+	UsageRecorder   identify.UsageRecorder
 }
 
 // Handler returns the HTTP mux ready to wrap in http.Server. The
@@ -55,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /tags", s.handleListTags)
 	mux.HandleFunc("GET /collections", s.handleListCollections)
 	mux.HandleFunc("GET /stats", s.handleStats)
+	mux.HandleFunc("POST /reindex", s.handleReindex)
+	mux.HandleFunc("POST /clean-orphans", s.handleCleanOrphans)
 	// Multi-file items — attached photos beyond the primary
 	// store_path. Backed by the same Store methods the CLI uses.
 	mux.HandleFunc("GET /items/{id}/files", s.handleListItemFiles)
@@ -64,6 +80,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /items/{id}/files/{fid}/primary", s.handlePromoteItemFile)
 	mux.HandleFunc("GET /items/{id}/files/{fid}/blob", s.handleItemFileBlob)
 	mux.HandleFunc("POST /items/merge", s.handleMergeItems)
+	mux.HandleFunc("POST /items/{id}/chat", s.handleChat)
+	mux.HandleFunc("POST /ai/fix", s.handleAIFix)
+	mux.HandleFunc("POST /ai/summary", s.handleAISummary)
+	mux.HandleFunc("POST /ai/tags", s.handleAITags)
+	mux.HandleFunc("GET /pricing", s.handlePricing)
+	mux.HandleFunc("GET /gemini-usage", s.handleGeminiUsage)
+	mux.HandleFunc("POST /gemini-usage", s.handleRecordGeminiUsage)
+	mux.HandleFunc("POST /resolve", s.handleResolve)
 
 	// Compose: /healthz lands on publicMux, everything else hits the
 	// authenticated mux. http.ServeMux uses "longest prefix wins" so
@@ -250,6 +274,14 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 			item.CapturedAt = &utc
 		}
 	}
+	// Client-sent OCR / transcript text. Populated by the camera
+	// path (ML Kit Text Recognition on Android, Vision on Mac) and
+	// by audio shares carrying a transcript (e.g. Google Recorder's
+	// combined audio+transcript intent). Server never runs OCR or
+	// speech recognition itself; this is purely a wire field.
+	if et := r.FormValue("extracted_text"); et != "" {
+		item.ExtractedText = et
+	}
 	// Capture time + camera info from EXIF — same flow as the CLI
 	// ingest path. Skipped when the bytes don't decode as EXIF.
 	if item.Type == model.TypeImage {
@@ -323,11 +355,12 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 // list replaces the existing set; omitting the field leaves the
 // existing set alone.
 type patchItemBody struct {
-	Title      *string   `json:"title,omitempty"`
-	Notes      *string   `json:"notes,omitempty"`
-	URL        *string   `json:"url,omitempty"`
-	Tags       *[]string `json:"tags,omitempty"`
-	Collection *string   `json:"collection,omitempty"`
+	Title         *string   `json:"title,omitempty"`
+	Notes         *string   `json:"notes,omitempty"`
+	URL           *string   `json:"url,omitempty"`
+	Tags          *[]string `json:"tags,omitempty"`
+	Collection    *string   `json:"collection,omitempty"`
+	ExtractedText *string   `json:"extracted_text,omitempty"`
 }
 
 // PATCH /items/{id} — partial update of an item's metadata.
@@ -356,6 +389,9 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.URL != nil {
 		item.URL = strings.TrimSpace(*body.URL)
+	}
+	if body.ExtractedText != nil {
+		item.ExtractedText = *body.ExtractedText
 	}
 	if body.Tags != nil {
 		// Build []model.Tag from the supplied names. UpdateItem's
@@ -601,6 +637,247 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.RebuildFTS(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleCleanOrphans(w http.ResponseWriter, r *http.Request) {
+	// 1. Get all referenced hashes from DB
+	hashes, err := s.Store.AllReferencedHashes(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query referenced hashes: "+err.Error())
+		return
+	}
+	referenced := make(map[string]bool)
+	for _, h := range hashes {
+		referenced[h] = true
+	}
+
+	// 2. Scan FileStore for orphans
+	all, err := s.Files.ListAll()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list files: "+err.Error())
+		return
+	}
+
+	var count int
+	for _, h := range all {
+		if !referenced[h] {
+			if err := s.Files.Delete(h); err == nil {
+				count++
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"orphans_deleted": count,
+	})
+}
+
+// GET /pricing — serves the Gemini pricing catalog from
+// ~/.stash/gemini-pricing.json so both Mac and Android draw from
+// the same source of truth. Mac is also where the file is
+// authored. When the file is missing or malformed, we fall back
+// to a compiled-in defaults blob so Android isn't blocked when
+// the user hasn't customized rates. Body is verbatim file
+// contents (or the fallback JSON), so adding new fields in the
+// future doesn't require a server-side schema change — clients
+// parse what they understand and ignore the rest.
+func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		path := filepath.Join(home, ".stash", "gemini-pricing.json")
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+	}
+	// File missing / unreadable — serve compiled-in defaults so
+	// clients always get a usable response. Same model set + rates
+	// as the Mac's compiled fallback in GeminiUsageStore.swift.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(defaultPricingJSON))
+}
+
+// GET /gemini-usage — serves the daemon's identify-spend ledger
+// from UsageLedgerPath (typically ~/.stash/gemini-usage.json).
+// When the file is missing (fresh install, daemon hasn't done any
+// identify yet), returns an empty snapshot with today's date so
+// clients can decode and show "0 calls today" cleanly. The Mac
+// and Android UIs overlay this onto their own per-device counters
+// to produce a combined view of total Gemini spend.
+func (s *Server) handleGeminiUsage(w http.ResponseWriter, r *http.Request) {
+	if s.UsageLedgerPath != "" {
+		if data, err := os.ReadFile(s.UsageLedgerPath); err == nil && len(data) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+	}
+	// Empty fallback — same schema as the file, just no entries.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"today":{"by_model":{}},"all_time":{"by_model":{}},"date":%q}`, time.Now().Format("2006-01-02"))
+}
+
+// POST /gemini-usage — records usage from external clients (Android)
+// so the daemon's central ledger includes spend from all platforms.
+func (s *Server) handleRecordGeminiUsage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Model           string `json:"model"`
+		PromptTokens    int    `json:"prompt_tokens"`
+		CandidateTokens int    `json:"candidate_tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if s.UsageRecorder != nil {
+		s.UsageRecorder.Record(body.Model, body.PromptTokens, body.CandidateTokens)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /resolve — resolves an op:// reference (from 1Password) to a
+// plaintext secret. Used by the Android app to get the Gemini API
+// key without the phone needing access to the op CLI directly.
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reference string `json:"reference"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(body.Reference), "op://") {
+		writeError(w, http.StatusBadRequest, "expected an op:// reference")
+		return
+	}
+	val, err := credentials.ResolveOp(body.Reference)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "resolution failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"result": val})
+}
+
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	item, err := s.Store.GetItem(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+	if err != nil {
+		writeError(w, http.StatusFailedDependency, "Gemini API key missing: "+err.Error())
+		return
+	}
+
+	client := gemini.New()
+	contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
+	var images []gemini.Image
+
+	// If the item is an image, include its primary blob
+	if item.Type == model.TypeImage && item.ContentHash != "" {
+		if rc, err := s.Files.Open(item.ContentHash); err == nil {
+			if data, err := io.ReadAll(rc); err == nil {
+				images = append(images, gemini.Image{
+					Data:     data,
+					MimeType: item.MimeType,
+				})
+			}
+			rc.Close()
+		}
+	}
+
+	// Include any attached multi-file images
+	if files, err := s.Store.ListItemFiles(r.Context(), id); err == nil {
+		for _, f := range files {
+			if strings.HasPrefix(f.MimeType, "image/") {
+				if rc, err := s.Files.Open(f.ContentHash); err == nil {
+					if data, err := io.ReadAll(rc); err == nil {
+						images = append(images, gemini.Image{
+							Data:     data,
+							MimeType: f.MimeType,
+						})
+					}
+					rc.Close()
+				}
+			}
+		}
+	}
+
+	res, err := client.Query(r.Context(), apiKey, contextInfo, images, body.Question)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Gemini query failed: "+err.Error())
+		return
+	}
+
+	// Record usage for accounting/analytics
+	if s.UsageRecorder != nil {
+		s.UsageRecorder.Record(res.Model, res.PromptTokens, res.CandidatesTokens)
+	}
+
+	// Append the answer to the notes. Keep the legacy notes-append
+	// for now so Mac/older clients still see the content until
+	// they learn about the dedicated field.
+	now := time.Now().Format("2006-01-02 15:04")
+	sep := "\n\n--- Follow-up: " + now + " ---\n"
+	item.Notes += sep + body.Question + "\n\n" + res.Answer
+
+	// Dedicated chat history for better UI rendering
+	item.ChatHistory = append(item.ChatHistory,
+		model.ChatMessage{
+			Role:      "user",
+			Content:   body.Question,
+			Timestamp: time.Now().UnixMilli(),
+		},
+		model.ChatMessage{
+			Role:      "model",
+			Content:   res.Answer,
+			Timestamp: time.Now().UnixMilli(),
+		},
+	)
+
+	if err := s.Store.UpdateItem(r.Context(), item); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update notes: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, item)
+}
+
+const defaultPricingJSON = `{
+  "default_model": "gemini-2.5-flash",
+  "models": {
+    "gemini-2.5-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
+    "gemini-2.5-flash-lite": { "input_per_million": 0.10, "output_per_million": 0.40 },
+    "gemini-2.5-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 },
+    "gemini-3-flash":        { "input_per_million": 0.50, "output_per_million": 3.00 },
+    "gemini-3-pro":          { "input_per_million": 2.00, "output_per_million": 12.00 }
+  }
+}
+`
+
 // ───────────────────────────────────────────────────────────
 // helpers
 // ───────────────────────────────────────────────────────────
@@ -705,6 +982,61 @@ func ShutdownWithGrace(ctx context.Context, srv *http.Server) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) handleAIFix(w http.ResponseWriter, r *http.Request) {
+	s.handleAITextTransform(w, r, "fix")
+}
+
+func (s *Server) handleAISummary(w http.ResponseWriter, r *http.Request) {
+	s.handleAITextTransform(w, r, "summary")
+}
+
+func (s *Server) handleAITags(w http.ResponseWriter, r *http.Request) {
+	s.handleAITextTransform(w, r, "tags")
+}
+
+func (s *Server) handleAITextTransform(w http.ResponseWriter, r *http.Request, kind string) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+	if err != nil {
+		writeError(w, http.StatusFailedDependency, "Gemini API key missing: "+err.Error())
+		return
+	}
+
+	client := gemini.New()
+	var res gemini.QueryResult
+	var queryErr error
+
+	switch kind {
+	case "fix":
+		res, queryErr = client.Fix(r.Context(), apiKey, body.Text)
+	case "summary":
+		res, queryErr = client.Summary(r.Context(), apiKey, body.Text)
+	case "tags":
+		res, queryErr = client.SuggestTags(r.Context(), apiKey, body.Text)
+	default:
+		writeError(w, http.StatusBadRequest, "unknown transform kind: "+kind)
+		return
+	}
+
+	if queryErr != nil {
+		writeError(w, http.StatusInternalServerError, "AI query failed: "+queryErr.Error())
+		return
+	}
+
+	if s.UsageRecorder != nil {
+		s.UsageRecorder.Record(res.Model, res.PromptTokens, res.CandidatesTokens)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"result": res.Answer})
 }
 
 // mergeCameraMetadata writes a Camera struct into an item's

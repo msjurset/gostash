@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -290,34 +292,54 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 	}
 
 	// EXIF — image-only, best-effort. Re-open per pass so we don't
-	// fight the extractor's reader position. ErrNoGPS /
-	// ErrNoCaptureTime / decode errors are silent skips: most
-	// non-phone images simply don't carry these tags.
+	// fight the extractor's reader position. "No GPS tag" / "no
+	// capture time" are expected for many images (any non-phone
+	// shot, screenshots, edits that strip tags) and stay silent.
+	// Anything else — decode failures, source-file gone, decode
+	// succeeded but library balked on a specific tag — gets a
+	// log line so silent metadata loss can't hide.
 	if item.Type == model.TypeImage {
+		exifLog := func(field string, err error) {
+			log.Printf("[ingest] EXIF %s read failed for %s: %v", field, absPath, err)
+		}
 		if exifFile, openErr := os.Open(absPath); openErr == nil {
 			if lat, lon, gpsErr := exif.ExtractGPS(exifFile); gpsErr == nil {
 				item.Location = &model.Location{
 					Lat: lat, Lon: lon, Source: "exif",
 				}
+			} else if !errors.Is(gpsErr, exif.ErrNoGPS) {
+				exifLog("GPS", gpsErr)
 			}
 			exifFile.Close()
+		} else {
+			exifLog("GPS open", openErr)
 		}
 		if exifFile, openErr := os.Open(absPath); openErr == nil {
 			if captured, ctErr := exif.ExtractCaptureTime(exifFile); ctErr == nil {
 				t := captured.UTC()
 				item.CapturedAt = &t
+			} else if !errors.Is(ctErr, exif.ErrNoCaptureTime) {
+				exifLog("CaptureTime", ctErr)
 			}
 			exifFile.Close()
+		} else {
+			exifLog("CaptureTime open", openErr)
 		}
 		// Camera-info pass — Make/Model + aperture / shutter /
 		// focal / ISO / dimensions. Merged into items.metadata
 		// under the "camera" key so the Mac detail view can
 		// surface it. HasAny() skips writing an all-empty object.
 		if exifFile, openErr := os.Open(absPath); openErr == nil {
-			if cam, ccErr := exif.ExtractCamera(exifFile); ccErr == nil && cam.HasAny() {
-				item.Metadata = mergeCameraMetadata(item.Metadata, cam)
+			if cam, ccErr := exif.ExtractCamera(exifFile); ccErr == nil {
+				if cam.HasAny() {
+					item.Metadata = mergeCameraMetadata(item.Metadata, cam)
+				}
+			} else {
+				exifLog("Camera", ccErr)
 			}
 			exifFile.Close()
+		} else {
+			exifLog("Camera open", openErr)
 		}
 	}
 

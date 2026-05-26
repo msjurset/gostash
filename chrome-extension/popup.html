@@ -37,6 +37,18 @@
       </button>
     </div>
 
+    <!-- Download routing toggles — top-level so they're visible in
+         both Stash AND Search views. Only rendered when the current
+         tab's host matches one of the rules configured in
+         options.html. Lets the user pre-emptively pause routing
+         before a "I don't want this one stashed" download, then
+         re-enable when they're done. Background.js picks up the
+         toggle change via storage.onChanged with no reload. -->
+    <div id="routing-section" class="routing-section hidden">
+      <label class="routing-label">Download routing</label>
+      <div id="routing-list"></div>
+    </div>
+
     <!-- Stash View -->
     <div id="stash-view" class="hidden">
       <div id="status"></div>

@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/rules"
 
 	"github.com/spf13/cobra"
 )
@@ -89,6 +93,20 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Capture-log entry on the surviving target so the activity /
+	// provenance view shows that this row absorbed others. Source
+	// IDs persist in the event so even though the source rows are
+	// gone from the DB, the audit trail still tells you what got
+	// folded in and when. Best-effort — a log write failure
+	// doesn't undo the merge.
+	_ = rules.AppendEvent(rules.DefaultLogPath(config.Dir()), rules.Event{
+		Timestamp: time.Now().UTC(),
+		Type:      rules.EventMerge,
+		ItemID:    out.ID,
+		Title:     out.Title,
+		Source:    "stash merge",
+		Sources:   resolvedSources,
+	})
 	if flagJSON {
 		printJSON(out)
 	} else {

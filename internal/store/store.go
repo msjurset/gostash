@@ -91,6 +91,10 @@ type Store interface {
 	DismissedMomentSignatures(ctx context.Context) (map[string]bool, error)
 	ListDismissedMoments(ctx context.Context) ([]model.DismissedMoment, error)
 
+	RebuildFTS(ctx context.Context) error
+	AllReferencedHashes(ctx context.Context) ([]string, error)
+	DeleteOrphanedFiles(ctx context.Context) (int, error)
+
 	// Saved Searches
 	SaveSearch(ctx context.Context, name, query string, filter model.ItemFilter, live bool) error
 	ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error)

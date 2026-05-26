@@ -38,6 +38,17 @@
 	<key>ThrottleInterval</key>
 	<integer>5</integer>
 
+	<!-- Give the daemon up to 60s after SIGTERM to drain in-flight
+	     work before launchd escalates to SIGKILL. The Gemini identify
+	     worker can be mid-call when a redeploy fires — paid request,
+	     and we still want the result written back to the DB — so we
+	     need more than launchd's default 20s. The HTTP layer's own
+	     graceful shutdown caps at 10s for in-flight phone uploads;
+	     this overall budget covers that plus the longest reasonable
+	     Gemini call. -->
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+
 	<!-- Log to ~/Library/Logs so Console.app surfaces it under the
 	     user and `log show` finds it without root. -->
 	<key>StandardOutPath</key>

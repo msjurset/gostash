@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/msjurset/gostash/internal/model"
@@ -166,6 +167,7 @@ func TestMergeItems(t *testing.T) {
 	target.ContentHash = "tgt-hash"
 	target.StorePath = "tgt-hash"
 	target.Notes = "Original notes."
+	target.ExtractedText = "Target recognized text."
 	target.Tags = []model.Tag{{Name: "mushroom"}}
 	if err := s.CreateItem(ctx, target); err != nil {
 		t.Fatal(err)
@@ -175,6 +177,7 @@ func TestMergeItems(t *testing.T) {
 	src1.ContentHash = "src1-hash"
 	src1.StorePath = "src1-hash"
 	src1.Notes = "Source 1 notes."
+	src1.ExtractedText = "Source 1 OCR text."
 	src1.Tags = []model.Tag{{Name: "mushroom"}, {Name: "white"}}
 	if err := s.CreateItem(ctx, src1); err != nil {
 		t.Fatal(err)
@@ -213,6 +216,19 @@ func TestMergeItems(t *testing.T) {
 		if !tagNames[want] {
 			t.Errorf("target missing tag %q after merge", want)
 		}
+	}
+
+	// extracted_text from src1 should fold into target's existing
+	// extracted_text with the same "---" divider notes use. src2
+	// had no extracted_text so it contributes nothing.
+	if !strings.Contains(out.ExtractedText, "Target recognized text.") {
+		t.Errorf("target extracted_text lost original: %q", out.ExtractedText)
+	}
+	if !strings.Contains(out.ExtractedText, "Source 1 OCR text.") {
+		t.Errorf("target extracted_text missing src1 contribution: %q", out.ExtractedText)
+	}
+	if !strings.Contains(out.ExtractedText, "---") {
+		t.Errorf("target extracted_text missing divider: %q", out.ExtractedText)
 	}
 
 	if _, err := s.GetItem(ctx, src1.ID); err == nil {

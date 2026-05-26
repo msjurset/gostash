@@ -105,6 +105,38 @@ func (fs *FileStore) Exists(hash string) bool {
 	return err == nil
 }
 
+// ListAll returns all content hashes currently stored in the file store.
+// Performs a deep scan of the hashed subdirectories (baseDir/xx/hash).
+// Skips non-content-addressable folders like 'thumbnails'.
+func (fs *FileStore) ListAll() ([]string, error) {
+	var hashes []string
+	// Content-addressable folders are all 2-char hex prefixes.
+	entries, err := os.ReadDir(fs.baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read base dir: %w", err)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() || len(e.Name()) != 2 {
+			continue
+		}
+		// Valid prefix folder; scan for hashes inside
+		files, err := os.ReadDir(filepath.Join(fs.baseDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !f.IsDir() {
+				hashes = append(hashes, f.Name())
+			}
+		}
+	}
+	return hashes, nil
+}
+
 // BaseDir returns the file store's base directory. Callers that need
 // to write non-content-addressable artifacts (e.g. per-item
 // thumbnails) live under this root.

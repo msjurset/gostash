@@ -460,3 +460,55 @@ button.primary:disabled {
 .cloud-tag.size-3 { font-size: 15px; color: #aaa; }
 .cloud-tag.size-4 { font-size: 18px; color: #ddd; }
 .cloud-tag.size-5 { font-size: 21px; color: #fff; }
+
+/* Per-site download routing section. Only shown when the current
+   tab's host matches a configured rule, so most pages still see
+   the original popup layout. */
+.routing-section {
+  margin: 8px 0 4px 0;
+  padding: 8px 10px;
+  background: #2a2a2a;
+  border-radius: 6px;
+}
+
+.routing-section.hidden { display: none; }
+
+.routing-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.routing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.routing-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.routing-name {
+  font-size: 13px;
+  color: #e0e0e0;
+  font-weight: 500;
+}
+
+.routing-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-left: auto;
+  text-align: right;
+  max-width: 60%;
+}
+
+.routing-hint.muted {
+  color: #ff9d4a;
+}

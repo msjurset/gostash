@@ -88,6 +88,10 @@ async function init() {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab;
+  // Render any per-site routing toggles applicable to this tab so
+  // the user can pause auto-stash before doing a non-stash
+  // download from a matched site.
+  renderRoutingToggles(tab).catch(() => {});
 
   pageTitle.textContent = tab.title || "Untitled";
   pageUrl.textContent = tab.url || "";
@@ -929,5 +933,84 @@ document.addEventListener("keydown", (e) => {
     stashBtn.click();
   }
 });
+
+// Per-site routing toggles. Reads the download-rules list from
+// chrome.storage.sync, finds the subset that matches the active
+// tab's host, and renders one checkbox per match in the popup's
+// routing section. Toggling persists immediately back to storage;
+// background.js picks it up via storage.onChanged with no reload.
+//
+// Default-hidden: when nothing matches the current tab, the
+// section stays out of the way so the popup is unchanged for
+// most sites.
+async function renderRoutingToggles(tab) {
+  const section = document.getElementById("routing-section");
+  const list = document.getElementById("routing-list");
+  if (!section || !list || !tab || !tab.url) return;
+
+  let host = "";
+  try { host = new URL(tab.url).hostname; } catch { return; }
+
+  const { downloadRules } = await chrome.storage.sync.get("downloadRules");
+  const rules = Array.isArray(downloadRules) ? downloadRules : [];
+  const matched = rules.filter((r) => routingHostMatches(host, r.hostPattern));
+  if (matched.length === 0) {
+    section.classList.add("hidden");
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const rule of matched) {
+    const row = document.createElement("label");
+    row.className = "routing-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = rule.enabled !== false;
+    cb.addEventListener("change", async () => {
+      rule.enabled = cb.checked;
+      const { downloadRules } = await chrome.storage.sync.get("downloadRules");
+      const all = Array.isArray(downloadRules) ? downloadRules : [];
+      const idx = all.findIndex((r) => r.id === rule.id);
+      if (idx >= 0) {
+        all[idx] = { ...all[idx], enabled: cb.checked };
+        await chrome.storage.sync.set({ downloadRules: all });
+      }
+      // Update the inline status line so the user gets feedback.
+      hint.textContent = cb.checked
+        ? `Auto-stashing to ${rule.subdir}/`
+        : `Paused — downloads land in default ~/Downloads/`;
+      hint.classList.toggle("muted", !cb.checked);
+    });
+    const text = document.createElement("span");
+    text.className = "routing-name";
+    text.textContent = rule.name || rule.hostPattern || "Unnamed rule";
+    const hint = document.createElement("span");
+    hint.className = "routing-hint";
+    if (cb.checked) {
+      hint.textContent = `Auto-stashing to ${rule.subdir}/`;
+    } else {
+      hint.textContent = `Paused — downloads land in default ~/Downloads/`;
+      hint.classList.add("muted");
+    }
+    row.appendChild(cb);
+    row.appendChild(text);
+    row.appendChild(hint);
+    list.appendChild(row);
+  }
+  section.classList.remove("hidden");
+}
+
+// Mirror of background.js's hostMatchesPattern. Kept local to
+// avoid a module import — the popup runs in its own document
+// context and bundling for one helper isn't worth it.
+function routingHostMatches(host, pattern) {
+  if (!host || !pattern) return false;
+  const h = host.toLowerCase();
+  const p = pattern.toLowerCase().trim();
+  if (!p) return false;
+  const suffix = p.startsWith("*.") ? p.slice(1) : p;
+  if (suffix.startsWith(".")) return h === suffix.slice(1) || h.endsWith(suffix);
+  return h === suffix || h.endsWith("." + suffix);
+}
 
 init();

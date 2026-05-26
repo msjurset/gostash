@@ -6,8 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/url"
 	"os"
@@ -16,10 +18,12 @@ import (
 	"time"
 
 	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/exif"
 	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/fetch"
 	"github.com/msjurset/gostash/internal/langdetect"
 	"github.com/msjurset/gostash/internal/model"
+	"github.com/msjurset/gostash/internal/rules"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/spf13/cobra"
@@ -45,6 +49,8 @@ func init() {
 	addCmd.Flags().StringP("note", "n", "", "Note to attach")
 	addCmd.Flags().StringP("collection", "c", "", "Add to collection")
 	addCmd.Flags().String("type", "", "Force type (url, snippet, file, image, email)")
+	addCmd.Flags().StringP("extracted-text", "e", "",
+		"Extracted text body. Use @filename to read from a file. Overrides any value derived from the source.")
 	addCmd.Flags().BoolP("delete", "d", false, "Delete source file/directory after successful stash")
 	rootCmd.AddCommand(addCmd)
 }
@@ -65,7 +71,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	note, _ := cmd.Flags().GetString("note")
 	collection, _ := cmd.Flags().GetString("collection")
 	forceType, _ := cmd.Flags().GetString("type")
+	extractedTextFlag, _ := cmd.Flags().GetString("extracted-text")
 	deleteSource, _ := cmd.Flags().GetBool("delete")
+
+	// Resolve --extracted-text: a leading "@" reads from a file
+	// (handles transcripts too long / too special-character-laden
+	// to embed via shell expansion). Empty flag = leave whatever
+	// the source-processing path set.
+	extractedTextOverride, err := resolveExtractedTextFlag(extractedTextFlag)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now().UTC()
 	entropy := ulid.Monotonic(rand.New(rand.NewSource(now.UnixNano())), 0)
@@ -121,6 +137,15 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		item.Type = model.ParseItemType(forceType)
 	}
 
+	// Override extracted_text if the user passed --extracted-text.
+	// Two-pointer wrapper so nil means "no override" and an empty
+	// string means "clear the field." Recorder-style imports use
+	// this to fold the .txt transcript into the same item as the
+	// .m4a in one call.
+	if extractedTextOverride != nil {
+		item.ExtractedText = *extractedTextOverride
+	}
+
 	// Override title if provided
 	if title != "" {
 		item.Title = title
@@ -167,6 +192,28 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	EnsureRuleCollections(ctx, s, ruleResult)
+
+	// Content-hash short-circuit: when the freshly-hashed bytes are
+	// byte-identical to an item already in stash, skip creating a
+	// duplicate row. Instead, merge any new tags / collections onto
+	// the existing item. Without this, retried captures (e.g. the
+	// user re-downloading from Google Photos when the extension's
+	// confirm popup got dropped) pile up as `dup, dup-of-<id>`
+	// entries — each one running its own redundant Gemini identify
+	// pass because the daemon's worker sees each new row separately.
+	// Skipping at ingest time keeps the item list clean AND avoids
+	// the wasted spend. Image / file items only; URL / snippet
+	// captures don't have content_hash populated.
+	if item.ContentHash != "" {
+		if existing, lookupErr := s.GetItemByContentHash(ctx, item.ContentHash); lookupErr == nil && existing != nil {
+			added := mergeTagsAndCollections(ctx, s, existing, item)
+			logDuplicateSkip(item, existing, added, ruleResult)
+			if isFileSource && deleteSource {
+				_ = os.RemoveAll(source)
+			}
+			return nil
+		}
+	}
 
 	if err := s.CreateItem(ctx, item); err != nil {
 		LogCaptureError(sourceFor(item), err.Error())
@@ -325,7 +372,88 @@ func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 		}
 	}
 
+	// EXIF — image-only, best-effort. Mirrors the same extraction
+	// stash serve's POST /capture does via internal/stash.populateFile.
+	// Was historically missing from this CLI path (the two ingest
+	// paths drifted), so files entering via `stash add` — which
+	// includes everything sortie ingests — landed without
+	// captured_at / location / camera metadata until a manual
+	// `stash backfill-*` run. Now we extract inline. "No GPS" /
+	// "no capture time" stay silent (expected for many images);
+	// anything else gets logged so a future silent skip can't hide.
+	if item.Type == model.TypeImage {
+		exifLog := func(field string, err error) {
+			log.Printf("[ingest] EXIF %s read failed for %s: %v", field, absPath, err)
+		}
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if lat, lon, gpsErr := exif.ExtractGPS(exifFile); gpsErr == nil {
+				item.Location = &model.Location{
+					Lat: lat, Lon: lon, Source: "exif",
+				}
+			} else if !errors.Is(gpsErr, exif.ErrNoGPS) {
+				exifLog("GPS", gpsErr)
+			}
+			exifFile.Close()
+		} else {
+			exifLog("GPS open", openErr)
+		}
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if captured, ctErr := exif.ExtractCaptureTime(exifFile); ctErr == nil {
+				t := captured.UTC()
+				item.CapturedAt = &t
+			} else if !errors.Is(ctErr, exif.ErrNoCaptureTime) {
+				exifLog("CaptureTime", ctErr)
+			}
+			exifFile.Close()
+		} else {
+			exifLog("CaptureTime open", openErr)
+		}
+		if exifFile, openErr := os.Open(absPath); openErr == nil {
+			if cam, ccErr := exif.ExtractCamera(exifFile); ccErr == nil {
+				if cam.HasAny() {
+					item.Metadata = mergeCameraMetadataAdd(item.Metadata, cam)
+				}
+			} else {
+				exifLog("Camera", ccErr)
+			}
+			exifFile.Close()
+		} else {
+			exifLog("Camera open", openErr)
+		}
+	}
+
+	// Filesystem-time fallback. For images, only kick in when EXIF
+	// didn't surface a capture time; for arbitrary files, this IS
+	// the capture signal (no better option exists). Mirrors the
+	// same fallback in internal/stash.populateFile.
+	if item.CapturedAt == nil &&
+		(item.Type == model.TypeImage || item.Type == model.TypeFile) {
+		if info, statErr := os.Stat(absPath); statErr == nil {
+			t := info.ModTime().UTC()
+			item.CapturedAt = &t
+		}
+	}
+
 	return nil
+}
+
+// mergeCameraMetadataAdd merges a Camera struct into an item's
+// metadata JSON under the "camera" key, preserving any other keys
+// already present. Mirrors internal/stash.mergeCameraMetadata — same
+// on-disk schema regardless of which ingest path produced the row.
+// Kept package-local to avoid pulling internal/stash just for this
+// helper.
+func mergeCameraMetadataAdd(existing json.RawMessage, cam exif.Camera) json.RawMessage {
+	m := map[string]any{}
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &m)
+	}
+	m["camera"] = cam
+	out, err := json.Marshal(m)
+	if err != nil {
+		return existing
+	}
+	return out
 }
 
 func addDirectory(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, path string) error {
@@ -515,4 +643,131 @@ func hasTag(tags []model.Tag, name string) bool {
 		}
 	}
 	return false
+}
+
+func hasCollection(cs []model.Collection, name string) bool {
+	for _, c := range cs {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeTagsAndCollections folds any tags / collections present on
+// `incoming` (the newly-ingested item we're choosing NOT to create)
+// onto `existing` (the item already in stash that shares the same
+// content_hash). Returns the human-readable list of tags actually
+// added — collections are added too but aren't surfaced in the
+// terminal output to keep it scannable. Both AddTag and
+// AddToCollection are idempotent server-side, so a partially-added
+// state is safe to retry.
+func mergeTagsAndCollections(
+	ctx context.Context,
+	s addStore,
+	existing, incoming *model.Item,
+) []string {
+	added := []string{}
+	for _, t := range incoming.Tags {
+		// Drop dup-marker tags — they were auto-applied to the
+		// incoming row by the rule engine BEFORE our short-circuit
+		// fired, and only make sense on the would-be-created
+		// duplicate row. Merging them onto the original gives the
+		// surviving item a useless self-reference (`dup-of-<self>`)
+		// and pollutes its tag list. Filter both the bare `dup`
+		// flag and any `dup-of-…` pointer at the same time.
+		if t.Name == "dup" || strings.HasPrefix(t.Name, "dup-of-") {
+			continue
+		}
+		if hasTag(existing.Tags, t.Name) {
+			continue
+		}
+		if err := s.AddTag(ctx, existing.ID, t.Name); err != nil {
+			continue
+		}
+		added = append(added, t.Name)
+	}
+	for _, c := range incoming.Collections {
+		if hasCollection(existing.Collections, c.Name) {
+			continue
+		}
+		_ = s.AddToCollection(ctx, existing.ID, c.Name)
+	}
+	return added
+}
+
+// addStore is the subset of store.Store that the duplicate-merge
+// path needs. Defined locally so this helper isn't coupled to the
+// full store interface — and so tests can stub it cheaply.
+type addStore interface {
+	AddTag(ctx context.Context, itemID, tag string) error
+	AddToCollection(ctx context.Context, itemID, collection string) error
+}
+
+// logDuplicateSkip surfaces a content-hash hit on the terminal +
+// JSON output. The existing item's ID is the load-bearing piece
+// — sortie's exec wrapper (and any user piping `stash add --json`)
+// can read it back and chain further commands the same way they
+// would for a fresh add.
+func logDuplicateSkip(
+	incoming, existing *model.Item,
+	addedTags []string,
+	ruleResult rules.Result,
+) {
+	if flagJSON {
+		printJSON(map[string]any{
+			"id":                existing.ID,
+			"title":             existing.Title,
+			"type":              existing.Type,
+			"skipped_duplicate": true,
+			"tags_added":        addedTags,
+		})
+		return
+	}
+	if len(addedTags) > 0 {
+		fmt.Printf("Already stashed as [%s] %s — added tags: %s\n",
+			existing.ID, existing.Title, strings.Join(addedTags, ", "))
+	} else {
+		fmt.Printf("Already stashed as [%s] %s — no changes\n",
+			existing.ID, existing.Title)
+	}
+	// Run any post-fire rule notifications (e.g. notify-on-duplicate)
+	// the same way fresh adds do, so a "you just re-stashed the same
+	// image" desktop notification surfaces regardless of which code
+	// path saved the work.
+	for _, msg := range ruleResult.Notifies {
+		fireNotification(existing, msg)
+	}
+}
+
+// resolveExtractedTextFlag returns nil when the user didn't pass
+// the flag, a pointer to an empty string when they passed "" (explicit
+// clear), and otherwise the body. Leading "@" treats the rest as a
+// filename to read from — needed for long transcripts or ones with
+// shell-special characters that would mangle in command-line expansion.
+// A literal "@" prefix can be escaped by doubling it (`@@…`).
+func resolveExtractedTextFlag(raw string) (*string, error) {
+	// Distinguishing "flag absent" vs "flag set to empty" via cobra
+	// is awkward — cobra returns "" for both. Treat "" as "no
+	// override" since clearing extracted_text on add doesn't make
+	// sense (the field starts empty anyway). Users who really want
+	// to wipe extracted_text post-add can use `stash edit -e ""`.
+	if raw == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(raw, "@@") {
+		// Escape: literal text starting with @.
+		s := raw[1:]
+		return &s, nil
+	}
+	if strings.HasPrefix(raw, "@") {
+		path := raw[1:]
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read --extracted-text file %q: %w", path, err)
+		}
+		s := string(data)
+		return &s, nil
+	}
+	return &raw, nil
 }

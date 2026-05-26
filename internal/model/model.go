@@ -64,6 +64,14 @@ type Item struct {
 	Collections   []Collection    `json:"collections,omitempty"`
 	Links         []Link          `json:"links,omitempty"`
 	Files         []ItemFile      `json:"files,omitempty"`
+	ChatHistory   []ChatMessage   `json:"chat_history,omitempty"`
+}
+
+// ChatMessage represents a single exchange in the follow-up chat.
+type ChatMessage struct {
+	Role      string `json:"role"` // "user" or "model"
+	Content   string `json:"content"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 // ItemFile is an additional photo / file attached to an item beyond

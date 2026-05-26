@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Stash — Download Routing</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>Download routing</h1>
+    <p class="help">
+      Files downloaded from a matching site land in
+      <code>~/Downloads/&lt;subdir&gt;/</code> instead of the default
+      Downloads folder. Sortie watches those subdirs and runs
+      <code>stash add</code> on each new file, so you get a one-gesture
+      capture from Google Photos, Bandcamp, etc. Chrome only lets the
+      extension reroute under your default Downloads folder — that's
+      why every subdir starts with <code>stash-</code>.
+    </p>
+
+    <table id="rules">
+      <thead>
+        <tr>
+          <th>On</th>
+          <th>Name</th>
+          <th>Host pattern</th>
+          <th>Subdir</th>
+          <th>Notify?</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rules-body"></tbody>
+    </table>
+
+    <div class="actions">
+      <button id="add-rule">Add rule</button>
+      <span id="status" class="status muted"></span>
+    </div>
+
+    <details class="docs">
+      <summary>How host patterns match</summary>
+      <ul>
+        <li><code>photos.google.com</code> — matches that exact host
+          and any subdomain of it.</li>
+        <li><code>*.bandcamp.com</code> — same as <code>.bandcamp.com</code>;
+          matches any subdomain (<code>artist.bandcamp.com</code>,
+          <code>bandcamp.com</code>).</li>
+        <li>The extension first checks the download's referrer; if
+          missing, it falls back to the active tab's URL.</li>
+      </ul>
+    </details>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

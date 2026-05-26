@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/model"
+	"github.com/msjurset/gostash/internal/rules"
 )
 
 // GET /items/{id}/files — list the attached files for an item.
@@ -281,5 +284,17 @@ func (s *Server) handleMergeItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Capture-log entry on the surviving target so the Mac app's
+	// activity view shows the merge. Mirrors what `stash merge` does
+	// on the CLI side. Best-effort — a log write failure does not
+	// undo the merge (the rows have already been folded).
+	_ = rules.AppendEvent(rules.DefaultLogPath(config.Dir()), rules.Event{
+		Timestamp: time.Now().UTC(),
+		Type:      rules.EventMerge,
+		ItemID:    out.ID,
+		Title:     out.Title,
+		Source:    "POST /items/merge",
+		Sources:   resolved,
+	})
 	writeJSON(w, http.StatusOK, out)
 }

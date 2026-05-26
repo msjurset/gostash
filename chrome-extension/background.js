@@ -17,44 +17,60 @@ function sendNativeMessage(message) {
 }
 
 // --- Context Menus ---
-
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "stash-page",
-    title: "Stash This Page",
-    contexts: ["page"],
+//
+// Registration runs on three triggers to survive every code path
+// that can drop the menus:
+//   - onInstalled: first install + extension update.
+//   - onStartup: Chrome relaunch with the extension already
+//     installed.
+//   - Top-level call at module load: service-worker wake-up
+//     (MV3 SWs are evicted after ~30s of idle; on wake the menus
+//     persist in Chrome's UI cache but if anything ever flushes
+//     them we re-register without a browser restart).
+//
+// `chrome.contextMenus.removeAll` runs first every time, so a
+// re-registration won't fail with "duplicate id" — the previous
+// state matters for what the user sees, but our authoritative
+// state is whatever we register here.
+function registerContextMenus() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "stash-page",
+      title: "Stash This Page",
+      contexts: ["page"],
+    });
+    chrome.contextMenus.create({
+      id: "stash-link",
+      title: "Stash This Link",
+      contexts: ["link"],
+    });
+    chrome.contextMenus.create({
+      id: "stash-selection",
+      title: "Stash Selected Text",
+      contexts: ["selection"],
+    });
+    // Right-click on an <img> → fetch the image bytes and stash
+    // it as a file (image-typed) item. Different from "Stash
+    // This Link" because the IMAGE shows up in the stash, not
+    // just a URL.
+    chrome.contextMenus.create({
+      id: "stash-image",
+      title: "Stash This Image",
+      contexts: ["image"],
+    });
+    // Right-click on a non-link, non-image part of the page →
+    // opens the file picker so the user can grab embedded
+    // images and linked files from this page in one go.
+    chrome.contextMenus.create({
+      id: "stash-files-from-page",
+      title: "Stash Files from Page…",
+      contexts: ["page"],
+    });
   });
-
-  chrome.contextMenus.create({
-    id: "stash-link",
-    title: "Stash This Link",
-    contexts: ["link"],
-  });
-
-  chrome.contextMenus.create({
-    id: "stash-selection",
-    title: "Stash Selected Text",
-    contexts: ["selection"],
-  });
-
-  // Right-click on an <img> → fetch the image bytes and stash it
-  // as a file (image-typed) item. Different from "Stash This Link"
-  // because the IMAGE shows up in the stash, not just a URL.
-  chrome.contextMenus.create({
-    id: "stash-image",
-    title: "Stash This Image",
-    contexts: ["image"],
-  });
-
-  // Right-click on a non-link, non-image part of the page → opens
-  // the file picker so the user can grab embedded images and
-  // linked files from this page in one go.
-  chrome.contextMenus.create({
-    id: "stash-files-from-page",
-    title: "Stash Files from Page…",
-    contexts: ["page"],
-  });
-});
+}
+chrome.runtime.onInstalled.addListener(registerContextMenus);
+chrome.runtime.onStartup.addListener(registerContextMenus);
+registerContextMenus();
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
@@ -875,3 +891,251 @@ function escapeXml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+// --- Download router -----------------------------------------------------
+//
+// Reroute downloads from configured sites into a per-site subdirectory
+// under the user's default Chrome downloads folder. Sortie watches those
+// subdirs and runs `stash add` on whatever lands there, so a "download
+// the originals from Photos" gesture becomes a one-step stash.
+//
+// Generic on purpose: each rule is `{hostPattern, subdir, notify}` and
+// the same machinery covers Google Photos, Bandcamp, Vimeo, Internet
+// Archive — anything where the in-page download flow lands files in a
+// predictable referrer host. Per-file-type routing happens downstream
+// in sortie's per-directory `.sortie.yaml`, not here.
+//
+// **Routing is synchronous and immediate.** The original design used an
+// async confirm popup that held `onDeterminingFilename` open until the
+// user clicked Stash. Chrome's listener has an internal ~10s timeout
+// after which it resolves with the default filename regardless — so
+// any popup hesitation dropped intercepts on the floor. We now route
+// the instant the rule matches; the `notify` flag controls only
+// whether a passive `chrome.notifications` toast fires afterward.
+// To stop routing temporarily, the user toggles the rule off in the
+// options page; tighter "pause for 5 minutes" UX is a future
+// enhancement.
+//
+// Chrome API note: `chrome.downloads.onDeterminingFilename` lets us
+// rewrite the suggested filename, but the path must be RELATIVE to the
+// user's default Downloads folder — we can't redirect to ~/Desktop or
+// elsewhere. That's why every subdir is rooted at ~/Downloads/.
+
+const DOWNLOAD_RULES_KEY = "downloadRules";
+
+const DEFAULT_DOWNLOAD_RULES = [
+  {
+    id: "google-photos",
+    name: "Google Photos",
+    enabled: true,
+    // `notify` (was: `confirm`) — when true, show a chrome.notifications
+    // toast after each routed download. Acts as the visible signal that
+    // routing happened, replacing the old blocking popup. Default true
+    // until the user has confidence the flow is solid; flip off in the
+    // options page once it's part of the muscle memory.
+    notify: true,
+    hostPattern: "photos.google.com",
+    subdir: "stash-google-photos",
+  },
+];
+
+// Normalize a stored rule into the shape this module expects. Legacy
+// rules from the popup-based design have a `confirm` boolean; the
+// current design uses `notify`. Migrate forward at read time so a
+// previously-saved rule from an earlier extension version still
+// produces notifications without requiring the user to open the
+// options page and resave.
+function normalizeRule(rule) {
+  if (!rule || typeof rule !== "object") return rule;
+  if (rule.notify === undefined) {
+    rule.notify = rule.confirm !== undefined ? rule.confirm : true;
+  }
+  if (rule.enabled === undefined) rule.enabled = true;
+  return rule;
+}
+
+// In-memory cache. Refreshed on storage.onChanged so the options page
+// edits take effect without reloading the extension. The listener
+// reads this directly (no async hop) — see decideDownloadRouting.
+//
+// **Seed with defaults at module load**, not null. The service worker
+// races the user: a Shift+D download right after extension reload
+// fires `onDeterminingFilename` faster than `chrome.storage.sync.get`
+// can resolve, so a null-then-async-prime model drops the very first
+// download. Starting from a synchronously-available default keeps the
+// router functional from event zero; the async overlay below replaces
+// it with the user's saved rules (including any explicit deletions)
+// as soon as storage answers.
+let downloadRulesCache = DEFAULT_DOWNLOAD_RULES.map(normalizeRule);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes[DOWNLOAD_RULES_KEY]) {
+    const incoming = changes[DOWNLOAD_RULES_KEY].newValue || [];
+    downloadRulesCache = incoming.map(normalizeRule);
+  }
+});
+
+// Seed defaults whenever the rule list is missing or empty — covers
+// both first-install AND the dev-reload case where the extension was
+// already present, so `chrome.runtime.onInstalled` fires with
+// `reason: "update"` and the older "if (reason !== install) return"
+// guard would skip the seed entirely. Runs on every wake-up but is
+// idempotent: the storage write only happens when nothing's there.
+async function seedDefaultDownloadRulesIfEmpty() {
+  const { [DOWNLOAD_RULES_KEY]: existing } = await chrome.storage.sync.get(DOWNLOAD_RULES_KEY);
+  if (!existing || (Array.isArray(existing) && existing.length === 0)) {
+    await chrome.storage.sync.set({ [DOWNLOAD_RULES_KEY]: DEFAULT_DOWNLOAD_RULES });
+    console.log("[stash] seeded default download rules", DEFAULT_DOWNLOAD_RULES);
+  }
+}
+chrome.runtime.onInstalled.addListener(() => { seedDefaultDownloadRulesIfEmpty(); });
+chrome.runtime.onStartup.addListener(() => { seedDefaultDownloadRulesIfEmpty(); });
+// Also call at top level so a service-worker wake-up (not a fresh
+// install / startup) primes the rule list if it's somehow empty.
+seedDefaultDownloadRulesIfEmpty();
+
+function hostMatchesPattern(host, pattern) {
+  if (!host || !pattern) return false;
+  const h = host.toLowerCase();
+  const p = pattern.toLowerCase().trim();
+  if (!p) return false;
+  // Strip leading "*." for wildcard-style entries — equivalent to a
+  // bare host suffix match.
+  const suffix = p.startsWith("*.") ? p.slice(1) : p;
+  if (suffix.startsWith(".")) return h === suffix.slice(1) || h.endsWith(suffix);
+  return h === suffix || h.endsWith("." + suffix);
+}
+
+function findRuleForReferrer(referrerURL, tabURL, rules) {
+  for (const candidate of [referrerURL, tabURL]) {
+    if (!candidate) continue;
+    let host;
+    try { host = new URL(candidate).hostname; } catch { continue; }
+    const match = rules.find((r) => r.enabled && hostMatchesPattern(host, r.hostPattern));
+    if (match) return { rule: match, host };
+  }
+  return null;
+}
+
+// Sanitize the filename so we don't accidentally introduce path
+// traversal via a maliciously-crafted Content-Disposition header.
+function safeBasename(name) {
+  if (!name) return "download";
+  // Strip directory components — onDeterminingFilename passes the
+  // server's suggested name including any path parts.
+  const last = name.replace(/\\/g, "/").split("/").pop() || "download";
+  // Reject leading dots so we don't write a hidden file (.htaccess etc.)
+  return last.replace(/^\.+/, "") || "download";
+}
+
+function rewriteFilename(rule, filename) {
+  const base = safeBasename(filename);
+  const subdir = (rule.subdir || "").replace(/^\/+|\/+$/g, "");
+  if (!subdir) return base;
+  return `${subdir}/${base}`;
+}
+
+// Synchronous matcher. Returns the routed filename string (if a rule
+// matches) or null (pass-through). Pulled out so the listener can call
+// it from a sync path — async-fetching rules from storage on every
+// download would re-introduce the timeout race we're trying to escape.
+// The in-memory cache (downloadRulesCache) is primed on startup and
+// refreshed via storage.onChanged, so by the time a download fires
+// the rules array is in process memory.
+function decideDownloadRouting(item, tabURL) {
+  const rules = downloadRulesCache;
+  if (!rules || rules.length === 0) {
+    return null;
+  }
+  const match = findRuleForReferrer(item.referrer, tabURL, rules);
+  if (!match) return null;
+  return {
+    rule: match.rule,
+    host: match.host,
+    filename: rewriteFilename(match.rule, item.filename),
+  };
+}
+
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  // Best-effort: pull the active tab URL synchronously when we already
+  // have it cached. We can't await without releasing the listener's
+  // sync window, so this is "use the referrer, fall back to whatever
+  // was active last." For Google Photos's Shift+D flow, referrer is
+  // populated and that's all we need.
+  //
+  // If the cache isn't loaded yet (extension just woke up), kick a
+  // refresh so the NEXT download can match — and pass this one through
+  // unchanged rather than holding the listener open. Better to lose
+  // one download to the default folder than drop all of them on a
+  // service-worker race.
+  if (downloadRulesCache === null) {
+    primeDownloadRulesCache();
+    suggest();
+    return;
+  }
+
+  const decision = decideDownloadRouting(item, /* tabURL */ "");
+  console.log("[stash] onDeterminingFilename", {
+    id: item.id,
+    filename: item.filename,
+    referrer: item.referrer,
+    finalUrl: item.finalUrl || item.url,
+    matched: decision ? decision.rule.name : null,
+    routedTo: decision ? decision.filename : null,
+  });
+  if (!decision) {
+    suggest();
+    return;
+  }
+  // Route immediately — no async, no popup, no timeout. Chrome
+  // accepts the suggestion and the download lands in the configured
+  // subdir.
+  suggest({
+    filename: decision.filename,
+    conflictAction: "uniquify",
+  });
+
+  // Passive notification (rule.notify) — informational only, no
+  // action buttons. Lets the user see that routing happened without
+  // ever blocking the download. Skip silently if notifications fail
+  // (browser permissions, etc).
+  if (decision.rule.notify) {
+    fireRoutingNotification(decision);
+  }
+});
+
+// `chrome.notifications` requires the `notifications` permission AND
+// a notification ID; we generate one per download so a burst of files
+// surfaces as a stack the user can dismiss individually. iconUrl
+// points at the extension icon so the notification is visually
+// recognizable as Stash.
+function fireRoutingNotification(decision) {
+  if (!chrome.notifications) return;
+  const id = `stash-route-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const base = decision.filename.split("/").pop();
+  chrome.notifications.create(id, {
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title: `Stashed via ${decision.rule.name || decision.host}`,
+    message: base,
+    priority: 0,
+  }, () => {
+    // Auto-dismiss after a few seconds so a Photos export of 30
+    // files doesn't paper the screen with stacked toasts.
+    setTimeout(() => chrome.notifications.clear(id), 4000);
+  });
+}
+
+// Force-prime the rules cache. Returns a promise so callers that
+// want to wait can; for the listener, we fire-and-forget.
+function primeDownloadRulesCache() {
+  chrome.storage.sync.get(DOWNLOAD_RULES_KEY).then((data) => {
+    const stored = data[DOWNLOAD_RULES_KEY];
+    downloadRulesCache = Array.isArray(stored)
+      ? stored.map(normalizeRule)
+      : DEFAULT_DOWNLOAD_RULES.map(normalizeRule);
+  });
+}
+// Prime synchronously-ish at service-worker wake so the first
+// matching download isn't lost. Idempotent with seedDefault…
+// because both feed the same cache.
+primeDownloadRulesCache();

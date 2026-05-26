@@ -52,6 +52,21 @@ deploy: build install-manpage install-completion install-chrome-host
 	@# and the items list renders empty.
 	codesign --force --sign - ~/.local/bin/$(BINARY)
 	$(MAKE) install-launchd
+	@# Re-prime the Keychain ACL for the newly-installed binary.
+	@# Each deploy changes the binary's cdhash, which invalidates
+	@# any existing -T trust on the cached Gemini key — without
+	@# this, the launchd-spawned `stash serve` daemon fails to
+	@# read the key silently and the identify worker idles.
+	@# Only runs if a reference has been saved by a prior
+	@# `stash auth set-gemini op://…`; first-time setup still
+	@# requires the user to run that interactively.
+	@if ~/.local/bin/$(BINARY) auth show-gemini 2>/dev/null | grep -q "cached"; then \
+		echo ">>> Refreshing Gemini key from saved op:// reference (TouchID may prompt)…"; \
+		~/.local/bin/$(BINARY) auth refresh-gemini || \
+			echo "    refresh-gemini failed — daemon will idle until you run it manually."; \
+	else \
+		echo ">>> No Gemini key saved yet. Run \`stash auth set-gemini op://…\` to enable auto-identify."; \
+	fi
 
 # launchd plumbing — installs / re-installs the user agent that
 # keeps `stash serve` alive across reboots and deploys. Idempotent:

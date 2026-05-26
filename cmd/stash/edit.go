@@ -8,6 +8,12 @@ import (
 
 	"github.com/msjurset/gostash/internal/audit"
 	"github.com/msjurset/gostash/internal/model"
+	"github.com/msjurset/gostash/internal/credentials"
+	"github.com/msjurset/gostash/internal/gemini"
+	"github.com/msjurset/gostash/internal/usage"
+	"github.com/msjurset/gostash/internal/config"
+	"io"
+	"time"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +34,104 @@ func init() {
 	editCmd.Flags().StringP("collection", "c", "", "Add to collection")
 	editCmd.Flags().String("location", "", "Set geolocation as 'lat,lon' (decimal degrees); sets source=manual")
 	editCmd.Flags().Bool("clear-location", false, "Remove the item's stored location")
+	editCmd.Flags().Bool("ask-ai", false, "Ask a follow-up question of the AI (use with --ask-question)")
+	editCmd.Flags().String("ask-question", "", "The follow-up question to ask the AI")
 	rootCmd.AddCommand(editCmd)
+
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "reindex",
+		Short: "Rebuild the FTS5 search index",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			return s.RebuildFTS(context.Background())
+		},
+	})
+
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "clean-orphans",
+		Short: "Delete unreferenced files from the store",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			fs := openFileStore()
+			hashes, err := s.AllReferencedHashes(context.Background())
+			if err != nil {
+				return err
+			}
+			referenced := make(map[string]bool)
+			for _, h := range hashes {
+				referenced[h] = true
+			}
+
+			all, err := fs.ListAll()
+			if err != nil {
+				return err
+			}
+
+			var count int
+			for _, h := range all {
+				if !referenced[h] {
+					if err := fs.Delete(h); err == nil {
+						count++
+					}
+				}
+			}
+
+			if flagJSON {
+				printJSON(map[string]any{"status": "ok", "orphans_deleted": count})
+			} else {
+				fmt.Printf("Deleted %d orphaned file(s).\n", count)
+			}
+			return nil
+		},
+	})
+
+	for _, kind := range []string{"fix", "summary", "tags"} {
+		k := kind
+		rootCmd.AddCommand(&cobra.Command{
+			Use:    "ai-" + k,
+			Hidden: true,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				text, err := io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+				if err != nil {
+					return err
+				}
+				gClient := gemini.New()
+				var res gemini.QueryResult
+				switch k {
+				case "fix":
+					res, err = gClient.Fix(context.Background(), apiKey, string(text))
+				case "summary":
+					res, err = gClient.Summary(context.Background(), apiKey, string(text))
+				case "tags":
+					res, err = gClient.SuggestTags(context.Background(), apiKey, string(text))
+				}
+				if err != nil {
+					return err
+				}
+				usageLedger := usage.New(config.Dir())
+				usageLedger.Record(res.Model, res.PromptTokens, res.CandidatesTokens)
+				if flagJSON {
+					printJSON(map[string]string{"result": res.Answer})
+				} else {
+					fmt.Print(res.Answer)
+				}
+				return nil
+			},
+		})
+	}
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -71,6 +174,67 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		item.Location = loc
+	}
+
+	if ask, _ := cmd.Flags().GetBool("ask-ai"); ask {
+		question, _ := cmd.Flags().GetString("ask-question")
+		if strings.TrimSpace(question) == "" {
+			return fmt.Errorf("--ask-ai requires --ask-question")
+		}
+
+		apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+		if err != nil {
+			return fmt.Errorf("gemini key: %w", err)
+		}
+
+		gClient := gemini.New()
+		contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
+		var images []gemini.Image
+
+		// Include primary image if any
+		if item.Type == model.TypeImage && item.StorePath != "" {
+			fs := openFileStore()
+			if rc, err := fs.Open(item.StorePath); err == nil {
+				if data, err := io.ReadAll(rc); err == nil {
+					images = append(images, gemini.Image{
+						Data:     data,
+						MimeType: item.MimeType,
+					})
+				}
+				rc.Close()
+			}
+		}
+
+		// Include attached images if any
+		if files, err := s.ListItemFiles(ctx, id); err == nil {
+			fs := openFileStore()
+			for _, f := range files {
+				if strings.HasPrefix(f.MimeType, "image/") {
+					if rc, err := fs.Open(f.ContentHash); err == nil {
+						if data, err := io.ReadAll(rc); err == nil {
+							images = append(images, gemini.Image{
+								Data:     data,
+								MimeType: f.MimeType,
+							})
+						}
+						rc.Close()
+					}
+				}
+			}
+		}
+
+		res, err := gClient.Query(ctx, apiKey, contextInfo, images, question)
+		if err != nil {
+			return fmt.Errorf("ai query: %w", err)
+		}
+
+		// Record usage for accounting/analytics
+		usageLedger := usage.New(config.Dir())
+		usageLedger.Record(res.Model, res.PromptTokens, res.CandidatesTokens)
+
+		now := time.Now().Format("2006-01-02 15:04")
+		sep := "\n\n--- Follow-up: " + now + " ---\n"
+		item.Notes += sep + question + "\n\n" + res.Answer
 	}
 
 	if err := s.UpdateItem(ctx, item); err != nil {

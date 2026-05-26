@@ -11,11 +11,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/gemini"
+	"github.com/msjurset/gostash/internal/identify"
 	"github.com/msjurset/gostash/internal/server"
+	"github.com/msjurset/gostash/internal/usage"
 
 	"github.com/spf13/cobra"
 )
@@ -139,12 +143,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// Usage ledger — persists per-call Gemini spend from the
+	// identify worker so Mac + Android UIs can read /gemini-usage
+	// and fold daemon spend into their per-device cost views.
+	usageLedger := usage.New(stashDir)
+
 	srv := &server.Server{
-		Store:        s,
-		Files:        fs,
-		Token:        token,
-		NewItemID:    newFetchID,
-		NewSnippetID: newFetchID,
+		Store:           s,
+		Files:           fs,
+		Token:           token,
+		NewItemID:       newFetchID,
+		NewSnippetID:    newFetchID,
+		UsageLedgerPath: usageLedger.Path(),
+		UsageRecorder:   usageLedger,
 	}
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -159,10 +170,36 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			addr, server.TokenPath(stashDir))
 	}
 
-	// Catch SIGINT / SIGTERM for graceful shutdown — in-flight
-	// uploads get up to 10 seconds to finish.
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	// Graceful shutdown coordination. SIGINT/SIGTERM cancels ctx;
+	// background workers (identify worker, etc.) observe the
+	// cancellation, stop picking up new jobs, finish any in-flight
+	// work, and signal completion via the WaitGroup. We then close
+	// the HTTP server (its own 10s drain budget covers phone
+	// uploads), and exit.
+	//
+	// Timing budget: the plist's ExitTimeOut=60s caps how long
+	// launchd will wait before SIGKILL. A long Gemini identify
+	// call is ~15-30s, an in-flight phone upload ~10s, so the 60s
+	// budget covers a worst-case overlap with margin.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	var workers sync.WaitGroup
+
+	// Identify worker — polls for items tagged `needs-identify`
+	// and runs Gemini on them. Idles when no API key is cached;
+	// pauses cleanly on key rejection until `stash auth
+	// refresh-gemini` runs. See internal/identify for the full
+	// defensive-behavior contract.
+	identifyWorker := identify.New(s, fs, gemini.New(), identify.Options{
+		Recorder: usageLedger,
+	})
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		identifyWorker.Run(ctx)
+	}()
+
 	errCh := make(chan error, 1)
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -172,8 +209,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	select {
 	case err := <-errCh:
 		return err
-	case <-stop:
+	case <-ctx.Done():
 		fmt.Fprintln(cmd.OutOrStdout(), "\nshutting down…")
+		// Phase 1: wait for any background workers to drain
+		// in-flight jobs. Cap the wait so a wedged worker can't
+		// hold the process open past launchd's ExitTimeOut.
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer drainCancel()
+		drained := make(chan struct{})
+		go func() {
+			workers.Wait()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-drainCtx.Done():
+			fmt.Fprintln(cmd.OutOrStdout(), "worker drain timed out; forcing close")
+		}
+		// Phase 2: HTTP graceful shutdown (10s internal budget).
 		return server.ShutdownWithGrace(context.Background(), httpSrv)
 	}
 }

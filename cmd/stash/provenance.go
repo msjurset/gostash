@@ -198,6 +198,18 @@ func captureToProvenance(ev rules.Event) ProvenanceEvent {
 		pe.Kind = "error"
 		pe.Error = ev.Error
 		pe.Summary = "Capture error: " + ev.Error
+	case rules.EventMerge:
+		pe.Kind = "merge"
+		n := len(ev.Sources)
+		if n == 1 {
+			pe.Summary = "Merged 1 item into this one (" + shortID(ev.Sources[0]) + ")"
+		} else {
+			shorts := make([]string, 0, n)
+			for _, s := range ev.Sources {
+				shorts = append(shorts, shortID(s))
+			}
+			pe.Summary = fmt.Sprintf("Merged %d items into this one (%s)", n, strings.Join(shorts, ", "))
+		}
 	}
 	return pe
 }

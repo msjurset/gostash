@@ -19,6 +19,13 @@ type Config struct {
 	BackupDir   string      `toml:"backup_dir"`
 	ImageViewer string      `toml:"image_viewer"`
 	Exclusions  []Exclusion `toml:"exclusions"`
+	// 1Password reference for the Gemini API key. NOT the secret —
+	// just the op://vault/item/field path. The secret itself lives
+	// in the system keychain (see internal/credentials). Stored
+	// here so `stash auth refresh-gemini` can re-resolve without
+	// arguments — used by the deploy hook to re-prime the Keychain
+	// ACL after the binary's cdhash changes.
+	GeminiOpRef string `toml:"gemini_op_ref,omitempty"`
 }
 
 // Exclusion redacts the URL field on items captured from matching

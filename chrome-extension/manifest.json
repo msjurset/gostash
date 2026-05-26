@@ -7,17 +7,21 @@
   "permissions": [
     "activeTab",
     "contextMenus",
+    "downloads",
+    "notifications",
     "scripting",
     "storage",
     "nativeMessaging",
     "tabs"
   ],
   "host_permissions": ["<all_urls>"],
+  "options_page": "options.html",
   "web_accessible_resources": [
     {
       "resources": [
         "picker.html", "picker.js", "picker.css",
-        "snippet.html", "snippet.js", "snippet.css"
+        "snippet.html", "snippet.js", "snippet.css",
+        "options.html", "options.js", "options.css"
       ],
       "matches": ["<all_urls>"]
     }

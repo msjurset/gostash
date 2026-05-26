@@ -38,6 +38,16 @@ const (
 	// `Error` field carries the message and `Source` carries
 	// whatever identifying string the call site had.
 	EventError EventType = "error"
+
+	// EventMerge — one or more items were folded into a target via
+	// `stash merge` (CLI) or the equivalent HTTP endpoint. `ItemID`
+	// is the SURVIVING target's ID; `Sources` carries the merged-in
+	// source IDs in their original argument order. Surfaces in
+	// provenance / activity views so the user can see when a row
+	// absorbed others (the source rows' own log entries become
+	// orphans — they still exist on disk but no longer reference a
+	// live item, which the provenance reader filters out by item ID).
+	EventMerge EventType = "merge"
 )
 
 // Event is one entry in $STASH_DIR/rules.log. JSON-encoded; one line per
@@ -55,6 +65,11 @@ type Event struct {
 	// error message that caused the capture to fail. `omitempty` so
 	// the existing event types stay byte-for-byte identical on disk.
 	Error string `json:"error,omitempty"`
+	// Sources carries the source-item IDs on EventMerge entries —
+	// the items that were folded into the surviving ItemID. Empty
+	// for every other event type and omitted on serialization so
+	// existing log files round-trip identically.
+	Sources []string `json:"sources,omitempty"`
 }
 
 // DefaultLogPath returns the canonical capture.log path:

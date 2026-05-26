@@ -399,6 +399,7 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "set archived: "+err.Error())
 			return
 		}
+		item.Archived = *body.Archived
 	}
 	if body.Tags != nil {
 		// Build []model.Tag from the supplied names. UpdateItem's

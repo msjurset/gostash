@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -14,6 +17,8 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+const itemColumns = `id, type, title, url, notes, source_path, store_path, content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at, archived, thumbnail_path, latitude, longitude, location_source, captured_at, chat_history, caption`
 
 // SQLiteStore implements Store using SQLite with FTS5.
 type SQLiteStore struct {
@@ -107,6 +112,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemCapturedAt(); err != nil {
 		return fmt.Errorf("migrate items.captured_at: %w", err)
 	}
+	if err := s.migrateItemCaption(); err != nil {
+		return fmt.Errorf("migrate items.caption: %w", err)
+	}
 	if err := s.migrateDismissedMoments(); err != nil {
 		return fmt.Errorf("migrate dismissed_moments: %w", err)
 	}
@@ -166,6 +174,15 @@ func (s *SQLiteStore) migrateCollectionUsageSignals() error {
 		return err
 	}
 	return nil
+}
+
+// migrateItemCaption adds the optional caption column to items.
+// Backs the "caption for the primary file" intent in multi-file
+// carousels, letting the user name the cover ("male", "side view")
+// without hijacking the item title.
+func (s *SQLiteStore) migrateItemCaption() error {
+	return s.addColumnIfMissing("items", "caption",
+		`ALTER TABLE items ADD COLUMN caption TEXT NOT NULL DEFAULT ''`)
 }
 
 // migrateDismissedMoments backs the user's "I don't want this
@@ -404,6 +421,206 @@ func (s *SQLiteStore) Close() error {
 }
 
 // Checkpoint flushes the WAL to the main database file.
+// ListItemsMissingEmbeddings returns items that don't have a record in
+// item_embeddings. Ordered by created_at DESC.
+func (s *SQLiteStore) ListItemsMissingEmbeddings(ctx context.Context, limit int) ([]model.Item, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Query for items that don't have an embedding entry.
+	q := `SELECT i.* FROM items i
+	      LEFT JOIN item_embeddings e ON e.item_id = i.id
+	      WHERE e.item_id IS NULL AND i.archived = 0
+	      ORDER BY i.created_at DESC LIMIT ?`
+	return s.queryItems(ctx, q, []any{limit})
+}
+
+// SaveItemEmbedding inserts or updates an embedding for an item.
+func (s *SQLiteStore) SaveItemEmbedding(ctx context.Context, itemID string, modelName string, vector []float32) error {
+	blob := float32ToBytes(vector)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO item_embeddings (item_id, model, vector, updated_at)
+		 VALUES (?, ?, ?, datetime('now'))
+		 ON CONFLICT(item_id) DO UPDATE SET model=excluded.model, vector=excluded.vector, updated_at=excluded.updated_at`,
+		itemID, modelName, blob)
+	return err
+}
+
+// GetItemEmbedding retrieves an embedding for an item.
+func (s *SQLiteStore) GetItemEmbedding(ctx context.Context, itemID string) (string, []float32, error) {
+	var modelName string
+	var blob []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT model, vector FROM item_embeddings WHERE item_id = ?`, itemID,
+	).Scan(&modelName, &blob)
+	if err != nil {
+		return "", nil, err
+	}
+	return modelName, bytesToFloat32(blob), nil
+}
+
+// SearchSemantic performs a brute-force cosine similarity search
+// against stored embeddings. Respects non-query filters.
+func (s *SQLiteStore) SearchSemantic(ctx context.Context, queryVector []float32, filter model.ItemFilter) ([]model.Item, error) {
+	// 1. Load all candidate items that match the filters (but ignore Query)
+	candidateFilter := filter
+	candidateFilter.Query = ""
+	candidateFilter.Limit = 0 // get all candidates
+	candidates, err := s.ListItems(ctx, candidateFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// 2. Load all embeddings in one batch
+	rows, err := s.db.QueryContext(ctx, `SELECT item_id, vector FROM item_embeddings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	vectorMap := make(map[string][]float32)
+	for rows.Next() {
+		var id string
+		var blob []byte
+		if err := rows.Scan(&id, &blob); err == nil {
+			vectorMap[id] = bytesToFloat32(blob)
+		}
+	}
+
+	// 3. Score candidates
+	type score struct {
+		item  model.Item
+		score float32
+	}
+	var scores []score
+	for _, item := range candidates {
+		v, ok := vectorMap[item.ID]
+		if !ok {
+			continue
+		}
+		scores = append(scores, score{item: item, score: cosineSimilarity(queryVector, v)})
+	}
+
+	// 4. Sort and limit
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(scores) > limit {
+		scores = scores[:limit]
+	}
+
+	var items []model.Item
+	for _, sc := range scores {
+		items = append(items, sc.item)
+	}
+
+	return items, nil
+}
+
+// SearchHybrid combines FTS and Semantic results using Reciprocal Rank
+// Fusion (RRF). Best of both worlds: keyword precision + semantic
+// discovery.
+func (s *SQLiteStore) SearchHybrid(ctx context.Context, filter model.ItemFilter) ([]model.Item, error) {
+	// 1. Get FTS results
+	ftsFilter := filter
+	ftsFilter.Semantic = false
+	ftsFilter.Limit = 100 // pull enough for ranking
+	ftsItems, err := s.SearchItems(ctx, ftsFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Get Semantic results
+	semanticItems, err := s.SearchSemantic(ctx, filter.QueryVector, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. RRF Blending
+	const k = 60.0
+	scores := make(map[string]float64)
+	itemMap := make(map[string]model.Item)
+
+	for i, item := range ftsItems {
+		scores[item.ID] += 1.0 / (k + float64(i+1))
+		itemMap[item.ID] = item
+	}
+	for i, item := range semanticItems {
+		scores[item.ID] += 1.0 / (k + float64(i+1))
+		itemMap[item.ID] = item
+	}
+
+	// 4. Sort and return
+	type itemScore struct {
+		id    string
+		score float64
+	}
+	var ranked []itemScore
+	for id, score := range scores {
+		ranked = append(ranked, itemScore{id: id, score: score})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+
+	var result []model.Item
+	for _, rs := range ranked {
+		if item, ok := itemMap[rs.id]; ok {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
+func float32ToBytes(v []float32) []byte {
+	buf := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+	}
+	return buf
+}
+
+func bytesToFloat32(b []byte) []float32 {
+	v := make([]float32, len(b)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4 : i*4+4]))
+	}
+	return v
+}
+
+func cosineSimilarity(a, b []float32) float32 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float32
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
+}
+
 func (s *SQLiteStore) Checkpoint() error {
 	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return err
@@ -474,15 +691,16 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 
 	lat, lon, locSrc := splitLocation(item.Location)
 	captured := ptrToNullTime(item.CapturedAt)
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO items (id, type, title, url, notes, source_path, store_path,
-			content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at,
-			thumbnail_path, latitude, longitude, location_source, captured_at, chat_history)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO items (%s)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, itemColumns),
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
-		item.FileSize, meta, item.CreatedAt, item.UpdatedAt, item.ThumbnailPath,
+		item.FileSize, meta, item.CreatedAt, item.UpdatedAt,
+		0, // archived
+		item.ThumbnailPath,
 		lat, lon, locSrc, captured, string(chatHist),
+		item.Caption,
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -503,10 +721,10 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 // GetItem fetches a single item by ID with its tags and collections.
 func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*model.Item, error) {
 	// Try exact match first, then prefix match for short IDs
-	row := s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM items WHERE id = ?", itemColumns), id)
 	item, err := s.scanItem(row)
 	if err == sql.ErrNoRows && len(id) >= 6 {
-		row = s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE id LIKE ?`, id+"%")
+		row = s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM items WHERE id LIKE ?", itemColumns), id+"%")
 		item, err = s.scanItem(row)
 	}
 	if err == sql.ErrNoRows {
@@ -551,6 +769,9 @@ func (s *SQLiteStore) ListItems(ctx context.Context, filter model.ItemFilter) ([
 
 // SearchItems performs full-text search using FTS5.
 func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) ([]model.Item, error) {
+	if filter.Semantic && len(filter.QueryVector) > 0 {
+		return s.SearchHybrid(ctx, filter)
+	}
 	if filter.Query == "" {
 		return s.ListItems(ctx, filter)
 	}
@@ -638,7 +859,8 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 		where = append(where, "i.archived = 0")
 	}
 
-	q := "SELECT i.* FROM items i WHERE " + strings.Join(where, " AND ") + " ORDER BY i.created_at DESC"
+	q := fmt.Sprintf("SELECT %s FROM items i WHERE %s ORDER BY i.created_at DESC",
+		prefixColumns("i", itemColumns), strings.Join(where, " AND "))
 
 	regex := strings.TrimSpace(filter.Regex)
 	requestedLimit := filter.Limit
@@ -701,12 +923,15 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
-			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?, archived=?
+			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?, archived=?,
+			caption=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
 		meta, item.UpdatedAt, item.ThumbnailPath,
-		lat, lon, locSrc, captured, string(chatHist), item.Archived, item.ID,
+		lat, lon, locSrc, captured, string(chatHist), item.Archived,
+		item.Caption,
+		item.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update item: %w", err)
@@ -786,7 +1011,7 @@ func (s *SQLiteStore) ExistsByURL(ctx context.Context, url string) (bool, error)
 
 // GetItemByURL fetches the first item matching the given URL.
 func (s *SQLiteStore) GetItemByURL(ctx context.Context, url string) (*model.Item, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT * FROM items WHERE url = ? LIMIT 1`, url)
+	row := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM items WHERE url = ? LIMIT 1", itemColumns), url)
 	item, err := s.scanItem(row)
 	if err != nil {
 		return nil, fmt.Errorf("get item by url: %w", err)
@@ -806,7 +1031,7 @@ func (s *SQLiteStore) GetItemByContentHash(ctx context.Context, hash string) (*m
 		return nil, sql.ErrNoRows
 	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT * FROM items WHERE content_hash = ? AND archived = 0 LIMIT 1`, hash)
+		fmt.Sprintf("SELECT %s FROM items WHERE content_hash = ? AND archived = 0 LIMIT 1", itemColumns), hash)
 	item, err := s.scanItem(row)
 	if err != nil {
 		return nil, err
@@ -841,7 +1066,7 @@ func (s *SQLiteStore) ListURLsWithoutContent(ctx context.Context, limit int) ([]
 	if limit <= 0 {
 		limit = 50
 	}
-	q := fmt.Sprintf(`SELECT i.* FROM items i WHERE i.type = 'link' AND i.extracted_text = '' ORDER BY i.created_at DESC LIMIT %d`, limit)
+	q := fmt.Sprintf(`SELECT %s FROM items i WHERE i.type = 'link' AND i.extracted_text = '' ORDER BY i.created_at DESC LIMIT %d`, prefixColumns("i", itemColumns), limit)
 	return s.queryItems(ctx, q, nil)
 }
 
@@ -1260,6 +1485,7 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 		&archived, &item.ThumbnailPath,
 		&lat, &lon, &locSrc,
 		&capturedAt, &chatHistoryStr,
+		&item.Caption,
 	)
 	if err != nil {
 		return nil, err
@@ -1291,6 +1517,7 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 			&archived, &item.ThumbnailPath,
 			&lat, &lon, &locSrc,
 			&capturedAt, &chatHistoryStr,
+			&item.Caption,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
@@ -1350,6 +1577,14 @@ func buildLocation(lat, lon sql.NullFloat64, src sql.NullString) *model.Location
 		Lon:    lon.Float64,
 		Source: src.String,
 	}
+}
+
+func prefixColumns(prefix, cols string) string {
+	parts := strings.Split(cols, ", ")
+	for i, p := range parts {
+		parts[i] = prefix + "." + p
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *SQLiteStore) queryItems(ctx context.Context, q string, args []any) ([]model.Item, error) {
@@ -1503,7 +1738,7 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 		where = append(where, "i.archived = 0")
 	}
 
-	q := "SELECT i.* FROM items i"
+	q := fmt.Sprintf("SELECT %s FROM items i", prefixColumns("i", itemColumns))
 	if hasCollection {
 		q += " JOIN item_collections ic ON ic.item_id = i.id" +
 			" JOIN collections c ON c.id = ic.collection_id"
@@ -1563,11 +1798,23 @@ func (s *SQLiteStore) ensureTag(ctx context.Context, tx *sql.Tx, name string) (i
 	return id, nil
 }
 
-func (s *SQLiteStore) addToCollectionTx(ctx context.Context, tx *sql.Tx, itemID, collectionName string) error {
-	var colID int64
-	err := tx.QueryRowContext(ctx, `SELECT id FROM collections WHERE name = ?`, collectionName).Scan(&colID)
+func (s *SQLiteStore) ensureCollection(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO collections (name) VALUES (?)`, name)
 	if err != nil {
-		return fmt.Errorf("collection not found: %s", collectionName)
+		return 0, fmt.Errorf("ensure collection: %w", err)
+	}
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM collections WHERE name = ?`, name).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("get collection id: %w", err)
+	}
+	return id, nil
+}
+
+func (s *SQLiteStore) addToCollectionTx(ctx context.Context, tx *sql.Tx, itemID, collectionName string) error {
+	colID, err := s.ensureCollection(ctx, tx, collectionName)
+	if err != nil {
+		return err
 	}
 	// New items go to the end of the collection's curated order.
 	// COALESCE keeps the first item at position 0.

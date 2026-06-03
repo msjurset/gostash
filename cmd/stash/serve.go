@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/embed"
 	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/identify"
 	"github.com/msjurset/gostash/internal/server"
@@ -198,6 +199,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go func() {
 		defer workers.Done()
 		identifyWorker.Run(ctx)
+	}()
+
+	// Embedding worker — polls for items missing vector embeddings
+	// and calls Gemini text-embedding-004. Backs the Semantic Search
+	// and RAG "Ask" features.
+	embedWorker := embed.New(s, gemini.New(), embed.Options{
+		Recorder: usageLedger,
+	})
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		embedWorker.Run(ctx)
 	}()
 
 	errCh := make(chan error, 1)

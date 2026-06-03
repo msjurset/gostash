@@ -81,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /items/{id}/files/{fid}/blob", s.handleItemFileBlob)
 	mux.HandleFunc("POST /items/merge", s.handleMergeItems)
 	mux.HandleFunc("POST /items/{id}/chat", s.handleChat)
+	mux.HandleFunc("POST /ask", s.handleAsk)
 	mux.HandleFunc("POST /ai/fix", s.handleAIFix)
 	mux.HandleFunc("POST /ai/summary", s.handleAISummary)
 	mux.HandleFunc("POST /ai/tags", s.handleAITags)
@@ -96,7 +97,23 @@ func (s *Server) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/healthz", publicMux)
 	root.Handle("/", requireBearer(s.Token, mux))
-	return root
+
+	// Wrap everything in a logger so we can see what the phone is hitting
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rw := &statusResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		root.ServeHTTP(rw, r)
+		log.Printf("%s %s %s -> %d", r.RemoteAddr, r.Method, r.URL.Path, rw.status)
+	})
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *statusResponseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // ───────────────────────────────────────────────────────────
@@ -327,10 +344,29 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// GET /search?q=&type=&tag=&limit=
+// GET /search?q=&type=&tag=&limit=&semantic=true
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	filter := readItemFilter(r)
 	filter.Query = r.URL.Query().Get("q")
+
+	if filter.Semantic && filter.Query != "" {
+		apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+		if err != nil {
+			writeError(w, http.StatusFailedDependency, "Gemini API key missing: "+err.Error())
+			return
+		}
+		client := gemini.New()
+		res, err := client.EmbedContent(r.Context(), apiKey, filter.Query)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "embedding query failed: "+err.Error())
+			return
+		}
+		if s.UsageRecorder != nil {
+			s.UsageRecorder.Record(res.Model, res.Tokens, 0)
+		}
+		filter.QueryVector = res.Vector
+	}
+
 	items, err := s.Store.SearchItems(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -802,13 +838,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	client := gemini.New()
 	contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
-	var images []gemini.Image
+	var media []gemini.Media
 
-	// If the item is an image, include its primary blob
-	if item.Type == model.TypeImage && item.ContentHash != "" {
+	// If the item is an image or video, include its primary blob
+	if (item.Type == model.TypeImage || strings.HasPrefix(item.MimeType, "video/")) && item.ContentHash != "" {
 		if rc, err := s.Files.Open(item.ContentHash); err == nil {
 			if data, err := io.ReadAll(rc); err == nil {
-				images = append(images, gemini.Image{
+				media = append(media, gemini.Media{
 					Data:     data,
 					MimeType: item.MimeType,
 				})
@@ -817,13 +853,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Include any attached multi-file images
+	// Include any attached multi-file images or videos
 	if files, err := s.Store.ListItemFiles(r.Context(), id); err == nil {
 		for _, f := range files {
-			if strings.HasPrefix(f.MimeType, "image/") {
+			if strings.HasPrefix(f.MimeType, "image/") || strings.HasPrefix(f.MimeType, "video/") {
 				if rc, err := s.Files.Open(f.ContentHash); err == nil {
 					if data, err := io.ReadAll(rc); err == nil {
-						images = append(images, gemini.Image{
+						media = append(media, gemini.Media{
 							Data:     data,
 							MimeType: f.MimeType,
 						})
@@ -834,7 +870,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := client.Query(r.Context(), apiKey, contextInfo, images, body.Question)
+	res, err := client.Query(r.Context(), apiKey, contextInfo, media, body.Question)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Gemini query failed: "+err.Error())
 		return
@@ -872,6 +908,100 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, item)
+}
+
+// POST /ask
+// Body: { "question": "..." }
+func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Question == "" {
+		writeError(w, http.StatusBadRequest, "question is required")
+		return
+	}
+
+	apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
+	if err != nil {
+		writeError(w, http.StatusFailedDependency, "Gemini API key missing: "+err.Error())
+		return
+	}
+
+	client := gemini.New()
+	ctx := r.Context()
+
+	// 1. Embed the question for semantic retrieval
+	res, err := client.EmbedContent(ctx, apiKey, body.Question)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedding question failed: "+err.Error())
+		return
+	}
+	if s.UsageRecorder != nil {
+		s.UsageRecorder.Record(res.Model, res.Tokens, 0)
+	}
+
+	// 2. Retrieve relevant items for context
+	filter := readItemFilter(r)
+	filter.Query = body.Question
+	filter.Semantic = true
+	filter.QueryVector = res.Vector
+	filter.Limit = 10
+
+	items, err := s.Store.SearchItems(ctx, filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "retrieving context failed: "+err.Error())
+		return
+	}
+
+	if len(items) == 0 {
+		writeError(w, http.StatusNotFound, "no relevant items found in your stash to answer this question")
+		return
+	}
+
+	// 3. Construct context for RAG
+	var contextParts []string
+	for i, item := range items {
+		part := fmt.Sprintf("Item %d: %s\nType: %s\nNotes: %s\nContent: %s",
+			i+1, item.Title, item.Type.Display(), item.Notes, truncateText(item.ExtractedText, 2000))
+		contextParts = append(contextParts, part)
+	}
+	contextInfo := strings.Join(contextParts, "\n\n---\n\n")
+
+	// 4. Ask Gemini
+	prompt := fmt.Sprintf(`You are a personal knowledge assistant. Answer the user's question using ONLY the provided context from their "Stash" vault. 
+If the answer is not in the context, say you don't know based on the stashed items.
+Be concise but thorough. Cite the Item numbers in your answer.
+
+Context:
+%s
+
+Question: %s`, contextInfo, body.Question)
+
+	queryRes, err := client.Query(ctx, apiKey, "", nil, prompt)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generating answer failed: "+err.Error())
+		return
+	}
+	if s.UsageRecorder != nil && queryRes.Model != "" {
+		s.UsageRecorder.Record(queryRes.Model, queryRes.PromptTokens, queryRes.CandidatesTokens)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"question": body.Question,
+		"answer":   queryRes.Answer,
+		"context":  items,
+	})
+}
+
+func truncateText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 const defaultPricingJSON = `{
@@ -933,6 +1063,9 @@ func readItemFilter(r *http.Request) model.ItemFilter {
 			filter.Offset = n
 		}
 	}
+	if v := q.Get("semantic"); v == "true" || v == "1" {
+		filter.Semantic = true
+	}
 	return filter
 }
 
@@ -974,6 +1107,7 @@ type errBody struct {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
+	log.Printf("ERROR %d: %s", status, msg)
 	writeJSON(w, status, errBody{Error: msg})
 }
 

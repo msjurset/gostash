@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/credentials"
+	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/model"
+	"github.com/msjurset/gostash/internal/usage"
 
 	"github.com/spf13/cobra"
 )
@@ -108,6 +112,7 @@ func addSearchFilterFlags(cmd *cobra.Command) {
 	cmd.Flags().IntP("limit", "l", 50, "Max results")
 	cmd.Flags().Bool("include-archived", false, "Also show archived items")
 	cmd.Flags().Bool("archived", false, "Show only archived items (overrides --include-archived)")
+	cmd.Flags().Bool("semantic", false, "Vector similarity search (semantic discovery)")
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
@@ -126,7 +131,29 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	items, err := s.SearchItems(context.Background(), filter)
+	ctx := context.Background()
+	if filter.Semantic && filter.Query != "" {
+		key, err := credentials.Load(credentials.KeyGeminiAPIKey)
+		if err != nil {
+			return fmt.Errorf("loading Gemini key: %w", err)
+		}
+		if key == "" {
+			return fmt.Errorf("no Gemini API key found; run `stash auth set-gemini` first")
+		}
+
+		client := gemini.New()
+		res, err := client.EmbedContent(ctx, key, filter.Query)
+		if err != nil {
+			return fmt.Errorf("embedding query: %w", err)
+		}
+		// Record usage
+		ledger := usage.New(config.Dir())
+		ledger.Record(res.Model, res.Tokens, 0)
+
+		filter.QueryVector = res.Vector
+	}
+
+	items, err := s.SearchItems(ctx, filter)
 	if err != nil {
 		return err
 	}
@@ -237,8 +264,22 @@ func runSearchRun(cmd *cobra.Command, args []string) error {
 		filter.Limit = 50
 	}
 
+	if filter.Semantic && filter.Query != "" {
+		key, err := credentials.Load(credentials.KeyGeminiAPIKey)
+		if err == nil && key != "" {
+			client := gemini.New()
+			res, err := client.EmbedContent(ctx, key, filter.Query)
+			if err == nil {
+				// Record usage
+				ledger := usage.New(config.Dir())
+				ledger.Record(res.Model, res.Tokens, 0)
+				filter.QueryVector = res.Vector
+			}
+		}
+	}
+
 	var items []model.Item
-	if filter.Query != "" {
+	if filter.Query != "" || filter.Semantic {
 		items, err = s.SearchItems(ctx, filter)
 	} else {
 		items, err = s.ListItems(ctx, filter)
@@ -307,6 +348,9 @@ func buildFilter(cmd *cobra.Command, query string) (model.ItemFilter, error) {
 	}
 	if v, _ := cmd.Flags().GetString("regex"); v != "" {
 		f.Regex = v
+	}
+	if v, _ := cmd.Flags().GetBool("semantic"); v {
+		f.Semantic = true
 	}
 	f.Limit, _ = cmd.Flags().GetInt("limit")
 	// `--archived` (only) wins over `--include-archived` (both). Both

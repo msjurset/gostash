@@ -27,11 +27,14 @@ import (
 // DefaultModel matches the Mac client's default. Override per call
 // via Client.Model if a fallback chain needs to route some calls
 // to Pro etc.
-const DefaultModel = "gemini-2.5-flash"
+const (
+	DefaultModel   = "gemini-1.5-flash"
+	EmbeddingModel = "gemini-embedding-001"
+)
 
-// Image is the input shape for identify — bytes plus a MIME type
+// Media is the input shape for identify — bytes plus a MIME type
 // so Gemini can decode without inspecting the payload.
-type Image struct {
+type Media struct {
 	Data     []byte
 	MimeType string
 }
@@ -51,6 +54,13 @@ type IdentifyResult struct {
 	TotalTokens      int
 }
 
+// EmbedResult holds the vector and token usage for an embedding call.
+type EmbedResult struct {
+	Vector []float32
+	Model  string
+	Tokens int
+}
+
 // Client wraps a single HTTP client + model selection. Cheap to
 // construct, no goroutines, safe for concurrent use.
 type Client struct {
@@ -68,30 +78,90 @@ func New() *Client {
 	}
 }
 
-// Identify sends one or more images + a prompt to Gemini and
+// EmbedContent generates a vector embedding for the given text.
+// Uses EmbeddingModel ("gemini-embedding-001").
+func (c *Client) EmbedContent(ctx context.Context, apiKey string, text string) (EmbedResult, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return EmbedResult{}, ErrMissingKey
+	}
+	if strings.TrimSpace(text) == "" {
+		return EmbedResult{}, errors.New("gemini: cannot embed empty text")
+	}
+
+	body := embedRequest{
+		Model: "models/" + EmbeddingModel,
+		Content: content{
+			Parts: []part{{Text: text}},
+		},
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return EmbedResult{}, fmt.Errorf("encoding request: %w", err)
+	}
+
+	url := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:embedContent?key=%s",
+		EmbeddingModel, apiKey,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		return EmbedResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return EmbedResult{}, fmt.Errorf("gemini http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return EmbedResult{}, &HTTPError{
+			Status: resp.StatusCode,
+			Body:   truncate(string(respBody), 800),
+		}
+	}
+
+	var decoded embedResponse
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
+		return EmbedResult{}, fmt.Errorf("decoding response: %w", err)
+	}
+
+	res := EmbedResult{
+		Vector: decoded.Embedding.Values,
+		Model:  EmbeddingModel,
+	}
+	if decoded.Usage != nil {
+		res.Tokens = decoded.Usage.TotalTokenCount
+	}
+	return res, nil
+}
+
+// Identify sends one or more media items + a prompt to Gemini and
 // returns the parsed title/notes/transcript. Caller supplies the
 // API key — typically from internal/credentials.Load — so the
 // gemini package itself stays storage-agnostic and testable.
-func (c *Client) Identify(ctx context.Context, apiKey string, images []Image, prompt string) (IdentifyResult, error) {
+func (c *Client) Identify(ctx context.Context, apiKey string, media []Media, prompt string) (IdentifyResult, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return IdentifyResult{}, ErrMissingKey
 	}
-	if len(images) == 0 {
-		return IdentifyResult{}, errors.New("gemini: at least one image required")
+	if len(media) == 0 {
+		return IdentifyResult{}, errors.New("gemini: at least one media item required")
 	}
 
 	effectivePrompt := prompt
-	if len(images) > 1 {
-		effectivePrompt = MultiImageHint(len(images)) + prompt
+	if len(media) > 1 {
+		effectivePrompt = MultiImageHint(len(media)) + prompt
 	}
 
-	parts := make([]part, 0, 1+len(images))
+	parts := make([]part, 0, 1+len(media))
 	parts = append(parts, part{Text: effectivePrompt})
-	for _, img := range images {
+	for _, m := range media {
 		parts = append(parts, part{
 			InlineData: &inlineData{
-				MimeType: img.MimeType,
-				Data:     base64.StdEncoding.EncodeToString(img.Data),
+				MimeType: m.MimeType,
+				Data:     base64.StdEncoding.EncodeToString(m.Data),
 			},
 		})
 	}
@@ -106,7 +176,7 @@ func (c *Client) Identify(ctx context.Context, apiKey string, images []Image, pr
 		model = DefaultModel
 	}
 	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		"https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s",
 		model, apiKey,
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
@@ -162,24 +232,24 @@ type QueryResult struct {
 }
 
 // Query sends a question to Gemini about an item's content (text and/or
-// images) and returns the answer. It includes previous context (like
+// media) and returns the answer. It includes previous context (like
 // the existing title/notes) to ground the follow-up response.
-func (c *Client) Query(ctx context.Context, apiKey string, contextInfo string, images []Image, question string) (QueryResult, error) {
+func (c *Client) Query(ctx context.Context, apiKey string, contextInfo string, media []Media, question string) (QueryResult, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return QueryResult{}, ErrMissingKey
 	}
 
-	parts := make([]part, 0, 2+len(images))
+	parts := make([]part, 0, 2+len(media))
 
 	// Construct the prompt with context
 	prompt := fmt.Sprintf("I have stashed the following content:\n\n%s\n\nMy question is: %s", contextInfo, question)
 	parts = append(parts, part{Text: prompt})
 
-	for _, img := range images {
+	for _, m := range media {
 		parts = append(parts, part{
 			InlineData: &inlineData{
-				MimeType: img.MimeType,
-				Data:     base64.StdEncoding.EncodeToString(img.Data),
+				MimeType: m.MimeType,
+				Data:     base64.StdEncoding.EncodeToString(m.Data),
 			},
 		})
 	}
@@ -195,7 +265,7 @@ func (c *Client) Query(ctx context.Context, apiKey string, contextInfo string, i
 		model = DefaultModel
 	}
 	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		"https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s",
 		model, apiKey,
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
@@ -257,6 +327,21 @@ func (c *Client) SuggestTags(ctx context.Context, apiKey string, text string) (Q
 }
 
 // ----- Wire types --------------------------------------------------
+
+type embedRequest struct {
+	Model    string  `json:"model"`
+	Content  content `json:"content"`
+	TaskType string  `json:"taskType,omitempty"`
+}
+
+type embedResponse struct {
+	Embedding embedding      `json:"embedding"`
+	Usage     *usageMetadata `json:"usageMetadata,omitempty"`
+}
+
+type embedding struct {
+	Values []float32 `json:"values"`
+}
 
 type generateRequest struct {
 	Contents []content `json:"contents"`

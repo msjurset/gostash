@@ -273,7 +273,7 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 	stored, err := os.Open(absPath)
 	if err == nil {
 		defer stored.Close()
-		result, err := extract.Run(stored, mimeType)
+		result, err := extract.Run(stored, mimeType, extract.Options{})
 		if err == nil {
 			item.ExtractedText = result.Text
 			if result.Title != "" && item.Title == "" {
@@ -287,6 +287,12 @@ func populateFile(item *model.Item, fs FileStore, absPath string) error {
 			if result.CapturedAt != nil {
 				t := result.CapturedAt.UTC()
 				item.CapturedAt = &t
+			}
+			// Add tags from extractor
+			for _, tag := range result.Tags {
+				if !item.HasTag(tag) {
+					item.Tags = append(item.Tags, model.Tag{Name: tag})
+				}
 			}
 		}
 	}
@@ -510,3 +516,5 @@ func mergeCameraMetadata(existing json.RawMessage, cam exif.Camera) json.RawMess
 	}
 	return out
 }
+
+

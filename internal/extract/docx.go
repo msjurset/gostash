@@ -22,7 +22,7 @@ func (e *DocxExtractor) Supports(mimeType string) bool {
 		strings.Contains(mimeType, "msword")
 }
 
-func (e *DocxExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *DocxExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("read docx: %w", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -41,7 +42,9 @@ func runRelated(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer s.Close()
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	source, err := s.GetItem(ctx, args[0])
 	if err != nil {

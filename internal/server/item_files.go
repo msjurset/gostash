@@ -46,7 +46,7 @@ func (s *Server) handleAttachItemFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "multipart: "+err.Error())
 		return
 	}

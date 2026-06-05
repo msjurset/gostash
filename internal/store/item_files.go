@@ -64,15 +64,27 @@ func (s *SQLiteStore) AttachItemFile(ctx context.Context, file *model.ItemFile) 
 // addressed filestore is intentionally not deleted here — refcount-
 // based GC is a separate operation (see `stash check` / future
 // `stash gc` work).
-func (s *SQLiteStore) DetachItemFile(ctx context.Context, fileID int64) error {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM item_files WHERE id = ?`, fileID)
+func (s *SQLiteStore) DetachItemFile(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM item_files WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("delete item_file: %w", err)
+		return fmt.Errorf("delete item file: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("item_file %d not found", fileID)
+		return fmt.Errorf("item file not found: %d", id)
+	}
+	return nil
+}
+
+// UpdateItemFileCaption updates the caption of an attached file.
+func (s *SQLiteStore) UpdateItemFileCaption(ctx context.Context, fileID int64, caption string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE item_files SET caption = ? WHERE id = ?`, caption, fileID)
+	if err != nil {
+		return fmt.Errorf("update item file caption: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("item file not found: %d", fileID)
 	}
 	return nil
 }

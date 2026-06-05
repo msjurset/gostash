@@ -308,7 +308,7 @@ func emailCaptureFromBlob(fs *filestore.FileStore, hash string) *time.Time {
 	}
 	defer f.Close()
 	ex := &extract.EmailExtractor{}
-	res, err := ex.Extract(f, extract.MIMEEmail)
+	res, err := ex.Extract(f, extract.MIMEEmail, extract.Options{})
 	if err != nil || res == nil || res.CapturedAt == nil {
 		return nil
 	}

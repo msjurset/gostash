@@ -19,6 +19,15 @@ for finding the file index you need to pass to 'stash detach',
 	RunE: runFiles,
 }
 
+var editFileCmd = &cobra.Command{
+	Use:   "edit-file <id> <file-index>",
+	Short: "Edit an attached file's caption",
+	Long: `Edits the caption for the file at <file-index>. Index 0 is
+the primary (items.store_path) — its caption is stored on the item.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runEditFile,
+}
+
 var detachCmd = &cobra.Command{
 	Use:   "detach <id> <file-index>",
 	Short: "Remove an attached file from an item",
@@ -58,9 +67,66 @@ Example — three attached files, swap last two:
 
 func init() {
 	rootCmd.AddCommand(filesCmd)
+	
+	editFileCmd.Flags().String("caption", "", "New caption for the file")
+	rootCmd.AddCommand(editFileCmd)
+	
 	rootCmd.AddCommand(detachCmd)
 	rootCmd.AddCommand(primaryCmd)
 	rootCmd.AddCommand(reorderCmd)
+}
+
+func runEditFile(cmd *cobra.Command, args []string) error {
+	idx, err := strconv.Atoi(args[1])
+	if err != nil {
+		return fmt.Errorf("invalid file-index: %w", err)
+	}
+
+	caption, _ := cmd.Flags().GetString("caption")
+
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	item, err := s.GetItem(ctx, args[0])
+	if err != nil {
+		return err
+	}
+
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+
+	if idx == 0 {
+		// Edit the primary file's caption (stored on the item)
+		item.Caption = caption
+		if err := s.UpdateItem(ctx, item); err != nil {
+			return err
+		}
+		if !jsonOutput {
+			fmt.Printf("Updated primary caption for [%s] to %q\n", shortID(item.ID), caption)
+		}
+		return nil
+	}
+
+	files, err := s.ListItemFiles(ctx, item.ID)
+	if err != nil {
+		return err
+	}
+	if idx < 1 || idx > len(files) {
+		return fmt.Errorf("file-index %d out of bounds (1-%d)", idx, len(files))
+	}
+
+	target := files[idx-1]
+	if err := s.UpdateItemFileCaption(ctx, target.ID, caption); err != nil {
+		return err
+	}
+
+	if !jsonOutput {
+		fmt.Printf("Updated caption for file %d on [%s] to %q\n", idx, shortID(item.ID), caption)
+	}
+	return nil
 }
 
 func runFiles(cmd *cobra.Command, args []string) error {

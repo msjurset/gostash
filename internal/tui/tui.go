@@ -15,9 +15,12 @@ import (
 	"time"
 
 	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/credentials"
 	"github.com/msjurset/gostash/internal/filestore"
+	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
+	"github.com/msjurset/gostash/internal/usage"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -68,7 +71,8 @@ type Model struct {
 	detail     viewport.Model
 
 	// filter state
-	filter model.ItemFilter
+	filter   model.ItemFilter
+	semantic bool
 
 	// link mode state
 	linkSearch    textinput.Model
@@ -587,6 +591,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, keys.Refresh):
 		return m, m.fetchPage(m.page)
+	case key.Matches(msg, keys.ToggleSemantic):
+		m.semantic = !m.semantic
+		m.filter.Semantic = m.semantic
+		return m, m.fetchPage(0)
 	}
 
 	return m, nil
@@ -623,10 +631,27 @@ func (m *Model) fetchPage(page int) tea.Cmd {
 	return func() tea.Msg {
 		var items []model.Item
 		var err error
-		if filter.Query != "" {
-			items, err = m.store.SearchItems(context.Background(), filter)
+		ctx := context.Background()
+
+		// If semantic search is enabled, we need to embed the query first.
+		if filter.Semantic && filter.Query != "" {
+			key, kerr := credentials.Load(credentials.KeyGeminiAPIKey)
+			if kerr == nil && key != "" {
+				client := gemini.New()
+				res, eerr := client.EmbedContent(ctx, key, filter.Query)
+				if eerr == nil {
+					// Record usage
+					ledger := usage.New(config.Dir())
+					ledger.Record(res.Model, res.Tokens, 0)
+					filter.QueryVector = res.Vector
+				}
+			}
+		}
+
+		if filter.Query != "" || filter.Semantic {
+			items, err = m.store.SearchItems(ctx, filter)
 		} else {
-			items, err = m.store.ListItems(context.Background(), filter)
+			items, err = m.store.ListItems(ctx, filter)
 		}
 		if err != nil {
 			return errMsg(err)
@@ -696,6 +721,9 @@ func (m Model) viewList() string {
 	}
 
 	// Active filter indicators
+	if m.semantic {
+		b.WriteString("  " + searchStyle.Render("SEMANTIC"))
+	}
 	if m.filter.Type != "" {
 		b.WriteString("  " + filterStyle.Render(string(m.filter.Type)))
 	}
@@ -833,6 +861,7 @@ func (m Model) viewHelp() string {
 		{"u", "Unlink a linked item"},
 		{"r", "Refresh item list"},
 		{"ctrl+l", "Clear search and filters"},
+		{"ctrl+s", "Toggle semantic search mode"},
 		{"q", "Quit / back"},
 		{"ctrl+c", "Force quit"},
 		{"?", "Show this help"},
@@ -880,7 +909,7 @@ func (m Model) statusBar() string {
 		pageInfo += "+"
 	}
 	left := fmt.Sprintf(" %d items %s", len(m.items), pageInfo)
-	right := " [/]:page  /:search  b:browse  g:graph  ?:help  q:quit "
+	right := " [/]:page  /:search  ^s:semantic  b:browse  g:graph  ?:help  q:quit "
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
 		gap = 0

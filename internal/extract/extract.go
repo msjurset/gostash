@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"fmt"
 	"io"
 	"time"
 )
@@ -19,9 +20,17 @@ type Result struct {
 	CapturedAt *time.Time
 }
 
+// Options control how extraction is performed.
+type Options struct {
+	// TranscribeVideo, when true, tells the video extractor to tag
+	// the item for AI transcription. Default false (videos just
+	// get tagged "video" but stay idle to avoid accidental cost).
+	TranscribeVideo bool
+}
+
 // Extractor extracts searchable text from content.
 type Extractor interface {
-	Extract(r io.Reader, mimeType string) (*Result, error)
+	Extract(r io.Reader, mimeType string, opts Options) (*Result, error)
 	Supports(mimeType string) bool
 }
 
@@ -34,15 +43,21 @@ func Register(e Extractor) {
 }
 
 // Run finds the first extractor that supports the given MIME type and runs it.
-// Falls back to plain text if no specific extractor matches.
-func Run(r io.Reader, mimeType string) (*Result, error) {
+func Run(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	for _, e := range registry {
 		if e.Supports(mimeType) {
-			return e.Extract(r, mimeType)
+			return e.Extract(r, mimeType, opts)
 		}
 	}
-	// Fallback to text extractor
-	return (&TextExtractor{}).Extract(r, mimeType)
+	
+	// Only fall back to text extractor if it's actually text OR generic binary.
+	// We don't want to try and "extract text" from video/mp4 etc.
+	text := &TextExtractor{}
+	if text.Supports(mimeType) || mimeType == "application/octet-stream" {
+		return text.Extract(r, mimeType, opts)
+	}
+
+	return nil, fmt.Errorf("no extractor for mime type: %s", mimeType)
 }
 
 func init() {
@@ -50,6 +65,7 @@ func init() {
 	Register(&PDFExtractor{})
 	Register(&DocxExtractor{})
 	Register(&ImageExtractor{})
+	Register(&VideoExtractor{})
 	Register(&HTMLExtractor{})
 	Register(&TextExtractor{})
 }

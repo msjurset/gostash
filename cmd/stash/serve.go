@@ -162,6 +162,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Minute, // Allow plenty of time for large multipart uploads
 	}
 
 	if !noQR {

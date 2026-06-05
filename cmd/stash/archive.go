@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/msjurset/gostash/internal/audit"
 	"github.com/spf13/cobra"
 )
 
@@ -79,6 +80,16 @@ func runSetArchived(cmd *cobra.Command, ids []string, archived bool) error {
 			errs = append(errs, fmt.Sprintf("%s: %v", id, err))
 			continue
 		}
+		
+		// Log the audit event so it shows in the UI activity list
+		if item, _ := s.GetItem(ctx, id); item != nil {
+			action := audit.ActionRemove
+			if archived {
+				action = audit.ActionAdd
+			}
+			logTagAudit(item, action, "archived", "edit")
+		}
+		
 		changed = append(changed, id)
 	}
 

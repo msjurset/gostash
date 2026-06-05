@@ -16,7 +16,7 @@ func (e *PDFExtractor) Supports(mimeType string) bool {
 	return strings.Contains(mimeType, "pdf")
 }
 
-func (e *PDFExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *PDFExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	// pdf library needs ReadSeeker, so buffer into memory
 	data, err := io.ReadAll(r)
 	if err != nil {

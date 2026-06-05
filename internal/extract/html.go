@@ -16,10 +16,10 @@ func (e *HTMLExtractor) Supports(mimeType string) bool {
 	return strings.Contains(mimeType, "html")
 }
 
-func (e *HTMLExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *HTMLExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	article, err := readability.FromReader(r, nil)
 	if err != nil {
-		return (&TextExtractor{}).Extract(r, mimeType)
+		return (&TextExtractor{}).Extract(r, mimeType, opts)
 	}
 
 	text := htmlToMarkdown(article.Content)

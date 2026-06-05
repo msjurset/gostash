@@ -37,6 +37,13 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["context_menu_helper.js"],
+      "all_frames": true
+    }
+  ],
   "omnibox": {
     "keyword": "stash"
   },

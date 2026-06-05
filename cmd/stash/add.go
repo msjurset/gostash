@@ -52,6 +52,7 @@ func init() {
 	addCmd.Flags().StringP("extracted-text", "e", "",
 		"Extracted text body. Use @filename to read from a file. Overrides any value derived from the source.")
 	addCmd.Flags().BoolP("delete", "d", false, "Delete source file/directory after successful stash")
+	addCmd.Flags().Bool("transcribe", false, "Transcribe video using Gemini (adds needs-identify tag)")
 	rootCmd.AddCommand(addCmd)
 }
 
@@ -73,6 +74,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	forceType, _ := cmd.Flags().GetString("type")
 	extractedTextFlag, _ := cmd.Flags().GetString("extracted-text")
 	deleteSource, _ := cmd.Flags().GetBool("delete")
+	transcribe, _ := cmd.Flags().GetBool("transcribe")
 
 	// Resolve --extracted-text: a leading "@" reads from a file
 	// (handles transcripts too long / too special-character-laden
@@ -103,10 +105,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Track whether source is a file/dir eligible for deletion
 	isFileSource := false
 
-	// Determine source type and process. Pre-save ingest failures
-	// (read errors, fetch errors, archive errors) are logged into
-	// the unified rules.log as `error` events so the user can audit
-	// silent capture failures via `stash log`.
+	opts := extract.Options{
+		TranscribeVideo: transcribe,
+	}
+
 	switch {
 	case source == "-" || isStdin():
 		if err := addSnippet(item, fs, source); err != nil {
@@ -114,7 +116,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	case isURL(source):
-		if err := addLink(item, fs, source); err != nil {
+		if err := addLink(item, fs, source, opts); err != nil {
 			LogCaptureError(source, err.Error())
 			return err
 		}
@@ -125,7 +127,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		isFileSource = true
 	default:
-		if err := addFile(item, fs, source); err != nil {
+		if err := addFile(item, fs, source, opts); err != nil {
 			LogCaptureError(source, err.Error())
 			return err
 		}
@@ -156,7 +158,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	// Add auto-suggested tags from MIME type
 	for _, st := range extract.SuggestTags(item.MimeType) {
-		if !hasTag(item.Tags, st) {
+		if !item.HasTag(st) {
 			item.Tags = append(item.Tags, model.Tag{Name: st})
 		}
 	}
@@ -284,7 +286,7 @@ func addSnippet(item *model.Item, fs interface{ Save(io.Reader) (string, int64, 
 	return nil
 }
 
-func addLink(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, rawURL string) error {
+func addLink(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, rawURL string, opts extract.Options) error {
 	item.Type = model.TypeURL
 	// Apply URL-exclusion rules from config.toml. The original URL
 	// is still used for the fetch below; only what's persisted on
@@ -319,7 +321,7 @@ func addLink(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 	return nil
 }
 
-func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, path string) error {
+func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, error) }, path string, opts extract.Options) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
@@ -363,7 +365,7 @@ func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 	stored, err := os.Open(absPath)
 	if err == nil {
 		defer stored.Close()
-		result, err := extract.Run(stored, mimeType)
+		result, err := extract.Run(stored, mimeType, opts)
 		if err == nil {
 			item.ExtractedText = result.Text
 			if result.Title != "" && item.Title == "" {
@@ -377,6 +379,12 @@ func addFile(item *model.Item, fs interface{ Save(io.Reader) (string, int64, err
 			if result.CapturedAt != nil {
 				t := result.CapturedAt.UTC()
 				item.CapturedAt = &t
+			}
+			// Add tags from extractor
+			for _, tag := range result.Tags {
+				if !item.HasTag(tag) {
+					item.Tags = append(item.Tags, model.Tag{Name: tag})
+				}
 			}
 		}
 	}
@@ -645,15 +653,6 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
-func hasTag(tags []model.Tag, name string) bool {
-	for _, t := range tags {
-		if t.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 func hasCollection(cs []model.Collection, name string) bool {
 	for _, c := range cs {
 		if c.Name == name {
@@ -688,7 +687,7 @@ func mergeTagsAndCollections(
 		if t.Name == "dup" || strings.HasPrefix(t.Name, "dup-of-") {
 			continue
 		}
-		if hasTag(existing.Tags, t.Name) {
+		if existing.HasTag(t.Name) {
 			continue
 		}
 		if err := s.AddTag(ctx, existing.ID, t.Name); err != nil {

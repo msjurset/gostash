@@ -36,7 +36,7 @@ func TestDocxExtract(t *testing.T) {
 	defer f.Close()
 
 	e := &DocxExtractor{}
-	result, err := e.Extract(f, MIMEDocx)
+	result, err := e.Extract(f, MIMEDocx, Options{})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

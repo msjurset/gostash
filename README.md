@@ -12,7 +12,8 @@ A personal knowledge vault for the command line. Capture URLs, text snippets, fi
 - **Full-text search** — SQLite FTS5-powered search with partial word matching
 - **Tags & collections** — Organize items with tags and named collections
 - **Item linking** — Create labeled relationships between items
-- **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages. Email bodies are charset-aware (Windows-1252, ISO-8859-1, etc. transcoded to UTF-8) and HTML / plain-text bullet lists are normalized to standard Markdown
+- **Content extraction** — Automatically extracts searchable text from HTML, PDF, DOCX, images, and email messages. Support for Gemini-powered video transcription (multimodal Title + Notes + Transcript) with local audio-only "lite" mode. Email bodies are charset-aware (Windows-1252, ISO-8859-1, etc. transcoded to UTF-8) and HTML / plain-text bullet lists are normalized to standard Markdown.
+
 - **Streaming health check** — `stash check --stream` emits newline-delimited JSON events as broken-URL / missing-file / duplicate findings arrive, for progressive UI rendering
 - **Interactive TUI** — Browse, search, link, and delete with a terminal UI built on [Bubbletea](https://github.com/charmbracelet/bubbletea), with ASCII art image preview and built-in file browser for batch stashing
 - **Configurable** — TOML config file at `~/.config/stash/config.toml`
@@ -115,6 +116,7 @@ stash ui
 - `-n <note>` — Add a note (on `add`/`edit`)
 - `-c <collection>` — Add to collection (on `add`)
 - `--type <type>` — Force item type: `link`, `snippet`, `file`, `image`, `email` (on `add`)
+- `--transcribe` — Transcribe video using Gemini (adds `needs-identify` tag) (on `add`)
 - `-d` / `--delete` — Delete source file/directory after successful stash (on `add`)
 - `-l <label>` / `--label` — Link label (on `link`)
 - `--directed` — Create a directed link (on `link`)

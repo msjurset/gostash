@@ -33,7 +33,7 @@ func TestTextExtractor(t *testing.T) {
 			if !e.Supports(tt.mime) {
 				t.Error("should support", tt.mime)
 			}
-			result, err := e.Extract(strings.NewReader(tt.input), tt.mime)
+			result, err := e.Extract(strings.NewReader(tt.input), tt.mime, Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +150,7 @@ func TestSuggestTags(t *testing.T) {
 }
 
 func TestRunFallback(t *testing.T) {
-	result, err := Run(strings.NewReader("plain text content"), "application/unknown")
+	result, err := Run(strings.NewReader("plain text content"), "application/octet-stream", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

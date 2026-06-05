@@ -208,9 +208,9 @@ func (s *Server) handleCaptureJSON(w http.ResponseWriter, r *http.Request) {
 // items captured from the phone end up indistinguishable from
 // items captured from drag-and-drop on the Mac.
 func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) {
-	// 100MB cap mirrors fetchURLBytes — anything bigger probably
+	// 500MB cap mirrors fetchURLBytes — anything bigger probably
 	// shouldn't be coming over the wire from a phone anyway.
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "multipart: "+err.Error())
 		return
 	}

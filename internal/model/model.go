@@ -46,6 +46,7 @@ type Item struct {
 	ExtractedText string          `json:"extracted_text,omitempty"`
 	MimeType      string          `json:"mime_type,omitempty"`
 	FileSize      int64           `json:"file_size,omitempty"`
+	Caption       string          `json:"caption,omitempty"`
 	ThumbnailPath string          `json:"thumbnail_path,omitempty"`
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
@@ -65,6 +66,16 @@ type Item struct {
 	Links         []Link          `json:"links,omitempty"`
 	Files         []ItemFile      `json:"files,omitempty"`
 	ChatHistory   []ChatMessage   `json:"chat_history,omitempty"`
+}
+
+// HasTag reports whether the item has a tag with the given name (case-sensitive).
+func (item *Item) HasTag(name string) bool {
+	for _, t := range item.Tags {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatMessage represents a single exchange in the follow-up chat.
@@ -327,6 +338,13 @@ type ItemFilter struct {
 	// indexed, so very large libraries should pair this with another
 	// filter that narrows first.
 	Regex string `json:"regex,omitempty"`
+	// Semantic triggers vector similarity search instead of FTS5.
+	// When true, Query is embedded and compared against the vault's
+	// stored embeddings. Returns items ordered by relevance score.
+	Semantic bool `json:"semantic,omitempty"`
+	// QueryVector is the pre-computed embedding of the search Query.
+	// Populated by the caller when Semantic is true.
+	QueryVector []float32 `json:"query_vector,omitempty"`
 }
 
 // Language returns the detected language from the item's metadata, or empty string.

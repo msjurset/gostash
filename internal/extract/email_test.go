@@ -15,7 +15,7 @@ func TestEmailExtractor_PlainText(t *testing.T) {
 		"Line one.\r\nLine two.\r\n"
 
 	e := &EmailExtractor{}
-	res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+	res, err := e.Extract(strings.NewReader(raw), MIMEEmail, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestEmailExtractor_PrefersMostRecentReceived(t *testing.T) {
 		"reply body\r\n"
 
 	e := &EmailExtractor{}
-	res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+	res, err := e.Extract(strings.NewReader(raw), MIMEEmail, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestEmailExtractor_Charset(t *testing.T) {
 				string(tc.body)
 
 			e := &EmailExtractor{}
-			res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+			res, err := e.Extract(strings.NewReader(raw), MIMEEmail, Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -143,7 +143,7 @@ func TestEmailExtractor_HTMLBody_BlockBreaks(t *testing.T) {
 		"</body></html>"
 
 	e := &EmailExtractor{}
-	res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+	res, err := e.Extract(strings.NewReader(raw), MIMEEmail, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestEmailExtractor_HTMLBody_PreservesLinks(t *testing.T) {
 		`<p>See <a href="https://example.com/path">the page</a> for details.</p>`
 
 	e := &EmailExtractor{}
-	res, err := e.Extract(strings.NewReader(raw), MIMEEmail)
+	res, err := e.Extract(strings.NewReader(raw), MIMEEmail, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

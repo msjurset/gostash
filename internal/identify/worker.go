@@ -38,8 +38,13 @@ package identify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,7 +110,7 @@ func (o *Options) applyDefaults() {
 		o.MaxAttempts = 5
 	}
 	if o.CallTimeout <= 0 {
-		o.CallTimeout = 60 * time.Second
+		o.CallTimeout = 30 * time.Second
 	}
 	if o.Recorder == nil {
 		o.Recorder = noopRecorder{}
@@ -197,7 +202,6 @@ func (w *Worker) tick(ctx context.Context) {
 	items, err := w.store.ListItems(ctx, model.ItemFilter{
 		Tags:  []string{Tag},
 		Limit: w.opts.BatchSize,
-		Type:  model.TypeImage,
 	})
 	if err != nil {
 		w.opts.Logger.Printf("[identify] list pending items: %v", err)
@@ -211,6 +215,11 @@ func (w *Worker) tick(ctx context.Context) {
 		if w.shouldSkip(item.ID) {
 			continue
 		}
+		// Filter by type manually since ListItems with TypeImage was narrowing too much.
+		// We want images and videos.
+		if item.Type != model.TypeImage && !strings.HasPrefix(item.MimeType, "video/") {
+			continue
+		}
 		if perr := w.processOne(ctx, &item, key); perr != nil {
 			if gemini.IsKeyRejected(perr) {
 				w.mu.Lock()
@@ -220,13 +229,37 @@ func (w *Worker) tick(ctx context.Context) {
 					"Worker paused — run `stash auth refresh-gemini` to recover.", perr)
 				return // stop the rest of this tick's batch
 			}
-			if gemini.IsTransient(perr) {
-				w.opts.Logger.Printf("[identify] transient error on item %s: %v (will retry)", item.ID, perr)
-				continue
-			}
+			
+			// Both transient and permanent errors consume an attempt.
+			// This prevents a model-level 503 loop from burning infinitely.
 			n := w.bumpAttempts(item.ID)
-			w.opts.Logger.Printf("[identify] permanent error on item %s (attempt %d/%d): %v",
-				item.ID, n, w.opts.MaxAttempts, perr)
+			
+			if gemini.IsTransient(perr) {
+				w.opts.Logger.Printf("[identify] transient error on item %s (attempt %d/%d): %v (will retry)", 
+					item.ID, n, w.opts.MaxAttempts, perr)
+			} else {
+				w.opts.Logger.Printf("[identify] permanent error on item %s (attempt %d/%d): %v",
+					item.ID, n, w.opts.MaxAttempts, perr)
+			}
+			
+			if n >= w.opts.MaxAttempts {
+				w.opts.Logger.Printf("[identify] item %s exhausted retries. Untagging.", item.ID)
+				w.clearAttempts(item.ID)
+				
+				// Remove `needs-identify` and add `identify-failed` to stop the loop
+				var newTags []model.Tag
+				for _, t := range item.Tags {
+					if t.Name != Tag {
+						newTags = append(newTags, t)
+					}
+				}
+				newTags = append(newTags, model.Tag{Name: "identify-failed"})
+				item.Tags = newTags
+				
+				if err := w.store.UpdateItem(ctx, &item); err != nil {
+					w.opts.Logger.Printf("[identify] failed to untag exhausted item %s: %v", item.ID, err)
+				}
+			}
 			continue
 		}
 		w.clearAttempts(item.ID)
@@ -235,12 +268,12 @@ func (w *Worker) tick(ctx context.Context) {
 }
 
 func (w *Worker) processOne(ctx context.Context, item *model.Item, key string) error {
-	images, err := w.collectImages(item)
+	media, err := w.collectMedia(item)
 	if err != nil {
 		return err
 	}
-	if len(images) == 0 {
-		return errors.New("identify: no readable images for item")
+	if len(media) == 0 {
+		return errors.New("identify: no readable media for item")
 	}
 
 	// In-flight Gemini call gets its own ctx — independent of
@@ -249,7 +282,7 @@ func (w *Worker) processOne(ctx context.Context, item *model.Item, key string) e
 	callCtx, cancel := context.WithTimeout(context.Background(), w.opts.CallTimeout)
 	defer cancel()
 
-	result, err := w.gem.Identify(callCtx, key, images, gemini.DefaultIdentifyPrompt)
+	result, err := w.gem.Identify(callCtx, key, media, gemini.DefaultIdentifyPrompt)
 
 	// Record usage even on parse-empty responses or errors so cost
 	// tracking reflects all paid calls (like safety filter blocks).
@@ -327,17 +360,53 @@ func shouldReplaceTitle(current string) bool {
 	return false
 }
 
-func (w *Worker) collectImages(item *model.Item) ([]gemini.Image, error) {
-	var images []gemini.Image
+func (w *Worker) collectMedia(item *model.Item) ([]gemini.Media, error) {
+	var media []gemini.Media
 	if item.ContentHash != "" {
 		data, err := readBlob(w.fs, item.ContentHash)
 		if err != nil {
 			return nil, err
 		}
-		images = append(images, gemini.Image{
-			Data:     data,
-			MimeType: mimeOr(item.MimeType, "image/jpeg"),
-		})
+		mime := mimeOr(item.MimeType, "image/jpeg")
+		if strings.HasPrefix(mime, "video/") {
+			// Cost Control: skip videos longer than 30 minutes to prevent
+			// accidental massive bills. 30m is the plan's suggested limit.
+			dur, err := getVideoDuration(data)
+			if err == nil && dur > 30*time.Minute {
+				return nil, fmt.Errorf("video too long for AI identify (%v > 30m)", dur)
+			}
+			if err != nil {
+				w.opts.Logger.Printf("[identify] duration check failed for %s: %v", item.ID, err)
+			}
+
+			if item.HasTag("identify-lite") {
+				audio, err := extractAudio(data)
+				if err == nil && len(audio) > 0 {
+					w.opts.Logger.Printf("[identify] lite-mode: extracted %d bytes audio from video %s", len(audio), item.ID)
+					media = append(media, gemini.Media{
+						Data:     audio,
+						MimeType: "audio/mp3",
+					})
+				} else {
+					w.opts.Logger.Printf("[identify] lite-mode audio extract failed for %s (fallback to full video): %v", item.ID, err)
+					media = append(media, gemini.Media{
+						Data:     data,
+						MimeType: mime,
+					})
+				}
+			} else {
+				// Default: Multimodal (Full Video)
+				media = append(media, gemini.Media{
+					Data:     data,
+					MimeType: mime,
+				})
+			}
+		} else {
+			media = append(media, gemini.Media{
+				Data:     data,
+				MimeType: mime,
+			})
+		}
 	}
 	for _, f := range item.Files {
 		if f.ContentHash == "" {
@@ -345,18 +414,102 @@ func (w *Worker) collectImages(item *model.Item) ([]gemini.Image, error) {
 		}
 		data, err := readBlob(w.fs, f.ContentHash)
 		if err != nil {
-			// One bad attached file shouldn't tank the
-			// whole identify — log and continue with what
-			// we have.
 			w.opts.Logger.Printf("[identify] skipping attached file %d on item %s: %v", f.ID, item.ID, err)
 			continue
 		}
-		images = append(images, gemini.Image{
-			Data:     data,
-			MimeType: mimeOr(f.MimeType, "image/jpeg"),
-		})
+		fMime := mimeOr(f.MimeType, "image/jpeg")
+		if strings.HasPrefix(fMime, "video/") {
+			// Duration check for attached files too
+			dur, err := getVideoDuration(data)
+			if err == nil && dur > 30*time.Minute {
+				w.opts.Logger.Printf("[identify] skipping attached video %d on %s: too long (%v)", f.ID, item.ID, dur)
+				continue
+			}
+
+			if item.HasTag("identify-lite") {
+				audio, err := extractAudio(data)
+				if err == nil && len(audio) > 0 {
+					w.opts.Logger.Printf("[identify] lite-mode: extracted %d bytes audio from attached video %d on %s", len(audio), f.ID, item.ID)
+					media = append(media, gemini.Media{
+						Data:     audio,
+						MimeType: "audio/mp3",
+					})
+				} else {
+					w.opts.Logger.Printf("[identify] lite-mode audio extract failed for attached file %d on item %s: %v", f.ID, item.ID, err)
+					media = append(media, gemini.Media{
+						Data:     data,
+						MimeType: fMime,
+					})
+				}
+			} else {
+				media = append(media, gemini.Media{
+					Data:     data,
+					MimeType: fMime,
+				})
+			}
+		} else {
+			media = append(media, gemini.Media{
+				Data:     data,
+				MimeType: fMime,
+			})
+		}
 	}
-	return images, nil
+	return media, nil
+}
+
+func getVideoDuration(video []byte) (time.Duration, error) {
+	tmpFile, err := os.CreateTemp("", "stash-duration-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(video); err != nil {
+		return 0, err
+	}
+	tmpFile.Close()
+
+	// -v error: quiet
+	// -show_entries format=duration: only show duration
+	// -of default=noprint_wrappers=1:nokey=1: just the number
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tmpFile.Name())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe error: %v, out: %s", err, string(out))
+	}
+
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration %q: %v", string(out), err)
+	}
+
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func extractAudio(video []byte) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "stash-audio-ext-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	vidPath := filepath.Join(tmpDir, "vid")
+	audPath := filepath.Join(tmpDir, "aud.mp3")
+
+	if err := os.WriteFile(vidPath, video, 0600); err != nil {
+		return nil, err
+	}
+
+	// -vn: no video
+	// -acodec libmp3lame: convert to mp3
+	// -q:a 5: decent quality VBR
+	// -y: overwrite
+	cmd := exec.Command("ffmpeg", "-y", "-i", vidPath, "-vn", "-acodec", "libmp3lame", "-q:a", "5", audPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("ffmpeg error: %v, out: %s", err, string(out))
+	}
+
+	return os.ReadFile(audPath)
 }
 
 func readBlob(fs *filestore.FileStore, hash string) ([]byte, error) {

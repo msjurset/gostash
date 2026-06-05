@@ -163,9 +163,9 @@ func handleNativeRequest(ctx context.Context, s store.Store, fs *filestore.FileS
 	case "list_collections":
 		return handleListCollections(ctx, s)
 	case "fetch_url_list":
-		return handleFetchURLList(req)
+		return handleFetchURLList(ctx, s, req)
 	case "fetch_url_pick":
-		return handleFetchURLPick(s, fs, req)
+		return handleFetchURLPick(ctx, s, fs, req)
 	case "append_notes":
 		return handleAppendNotes(ctx, s, req)
 	case "stash_blob":
@@ -220,7 +220,7 @@ func handleStashURL(ctx context.Context, s store.Store, fs *filestore.FileStore,
 			// timestamp from the headers as CapturedAt; other
 			// extractors leave it nil. Honored here before the
 			// optional req.CapturedAt override.
-			run, _ := extract.Run(bytes.NewReader(result.Body), mt)
+			run, _ := extract.Run(bytes.NewReader(result.Body), mt, extract.Options{})
 			if run != nil && run.CapturedAt != nil {
 				t := run.CapturedAt.UTC()
 				item.CapturedAt = &t
@@ -479,10 +479,20 @@ func handleListCollections(ctx context.Context, s store.Store) *nativeResponse {
 // a "page" response with candidate URLs, or a "direct" response
 // with metadata about a single downloadable file. The Chrome
 // extension uses this to populate its file picker.
-func handleFetchURLList(req *nativeRequest) *nativeResponse {
+func handleFetchURLList(ctx context.Context, s store.Store, req *nativeRequest) *nativeResponse {
 	if req.URL == "" {
 		return &nativeResponse{Error: "url is required"}
 	}
+
+	// Prefer the title from an existing item if we've already stashed this URL.
+	// Prevents "Discovery" from suggesting the original page title (and
+	// potentially overwriting a user's custom edit) when the tool is
+	// triggered on an already-stashed item.
+	var existingTitle string
+	if item, err := s.GetItemByURL(ctx, req.URL); err == nil && item != nil {
+		existingTitle = item.Title
+	}
+
 	body, ctype, finalURL, err := fetchURLBytes(req.URL, "")
 	if err != nil {
 		return &nativeResponse{Error: fmt.Sprintf("fetch: %v", err)}
@@ -493,11 +503,17 @@ func handleFetchURLList(req *nativeRequest) *nativeResponse {
 		if err != nil {
 			return &nativeResponse{Error: fmt.Sprintf("scrape: %v", err)}
 		}
+
+		title := page.PageTitle
+		if existingTitle != "" {
+			title = existingTitle
+		}
+
 		return &nativeResponse{
 			OK:         true,
 			PageType:   "page",
 			PageURL:    finalURL,
-			PageTitle:  page.PageTitle,
+			PageTitle:  title,
 			Candidates: page.Candidates,
 		}
 	}
@@ -615,7 +631,7 @@ func buildAttributionHeader(title, srcURL string) string {
 // URL in `Picks`, stashes them, links to the source page item if
 // `LinkSource` is given, optionally bundles into a zip when
 // `Archive` is true. Returns the list of created items.
-func handleFetchURLPick(s store.Store, fs *filestore.FileStore, req *nativeRequest) *nativeResponse {
+func handleFetchURLPick(ctx context.Context, s store.Store, fs *filestore.FileStore, req *nativeRequest) *nativeResponse {
 	if len(req.Picks) == 0 {
 		return &nativeResponse{Error: "picks is required"}
 	}
@@ -648,7 +664,6 @@ func handleFetchURLPick(s store.Store, fs *filestore.FileStore, req *nativeReque
 			Type:  string(archiveItem.Type),
 		})
 	} else {
-		ctx := context.Background()
 		for _, pick := range req.Picks {
 			body, ctype, finalURL, err := fetchURLBytes(pick, pageURL)
 			if err != nil {
@@ -673,8 +688,7 @@ func handleFetchURLPick(s store.Store, fs *filestore.FileStore, req *nativeReque
 		// Chrome surface trusts the user's explicit toggle and does
 		// not warn past the CLI's soft 15-pick threshold.
 		if req.Clique && len(imported) >= 2 {
-			ctx := context.Background()
-			for i := 0; i < len(imported); i++ {
+				for i := 0; i < len(imported); i++ {
 				for j := i + 1; j < len(imported); j++ {
 					if err := s.LinkItems(ctx, imported[i].ID, imported[j].ID, "clique", false); err != nil {
 						errors = append(errors, fmt.Sprintf("clique link: %v", err))

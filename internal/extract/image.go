@@ -15,7 +15,7 @@ func (e *ImageExtractor) Supports(mimeType string) bool {
 	return strings.HasPrefix(mimeType, "image/")
 }
 
-func (e *ImageExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *ImageExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	if !tesseractAvailable() {
 		return &Result{
 			MimeType: mimeType,

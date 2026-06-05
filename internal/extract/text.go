@@ -12,7 +12,7 @@ func (e *TextExtractor) Supports(mimeType string) bool {
 	return strings.HasPrefix(mimeType, "text/plain") || mimeType == ""
 }
 
-func (e *TextExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *TextExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err

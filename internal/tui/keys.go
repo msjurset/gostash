@@ -22,6 +22,7 @@ type keyMap struct {
 	TagGraph      key.Binding
 	Browse        key.Binding
 	Toggle        key.Binding
+	ToggleSemantic key.Binding
 	SelectAll     key.Binding
 	FilterURL     key.Binding
 	FilterSnippet key.Binding
@@ -106,6 +107,10 @@ var keys = keyMap{
 	Toggle: key.NewBinding(
 		key.WithKeys(" "),
 		key.WithHelp("space", "toggle select"),
+	),
+	ToggleSemantic: key.NewBinding(
+		key.WithKeys("ctrl+s"),
+		key.WithHelp("ctrl+s", "toggle semantic search"),
 	),
 	SelectAll: key.NewBinding(
 		key.WithKeys("a"),

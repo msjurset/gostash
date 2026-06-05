@@ -44,6 +44,7 @@ func TestImageExtractWithoutTesseract(t *testing.T) {
 	result, err := e.Extract(
 		strings.NewReader("fake image data"),
 		"image/png",
+		Options{},
 	)
 	if err != nil {
 		t.Fatalf("extract: %v", err)

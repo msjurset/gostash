@@ -25,7 +25,7 @@ func (e *EmailExtractor) Supports(mimeType string) bool {
 	return mimeType == MIMEEmail || strings.Contains(mimeType, "message/rfc822")
 }
 
-func (e *EmailExtractor) Extract(r io.Reader, mimeType string) (*Result, error) {
+func (e *EmailExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return nil, fmt.Errorf("parse email: %w", err)

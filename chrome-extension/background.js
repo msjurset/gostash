@@ -39,6 +39,14 @@ function registerContextMenus() {
       title: "Stash This Page",
       contexts: ["page"],
     });
+    
+    // Single triage item that we dynamically relabel
+    chrome.contextMenus.create({
+      id: "triage-later",
+      title: "Read Later",
+      contexts: ["page", "link", "video"],
+    });
+
     chrome.contextMenus.create({
       id: "stash-link",
       title: "Stash This Link",
@@ -77,16 +85,33 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     let response;
     switch (info.menuItemId) {
       case "stash-page":
-        let pageCapturedAt = null;
-        try {
-          const scrape = await scrapePageDOM(tab);
-          pageCapturedAt = scrape.page_captured_at;
-        } catch {}
+      case "triage-later":
+        let url = info.linkUrl || tab.url;
+        let title = info.linkUrl ? "" : tab.title;
+        let capturedAt = null;
+        if (!info.linkUrl) {
+          try {
+            const scrape = await scrapePageDOM(tab);
+            capturedAt = scrape.page_captured_at;
+          } catch {}
+        }
+        
+        const tags = [];
+        if (info.menuItemId === "triage-later") {
+          // Discriminate tag based on URL type
+          if (looksLikeVideo(url)) {
+            tags.push("watch-later");
+          } else {
+            tags.push("read-later");
+          }
+        }
+
         response = await sendNativeMessage({
           action: "stash_url",
-          url: tab.url,
-          title: tab.title,
-          captured_at: pageCapturedAt,
+          url: url,
+          title: title,
+          captured_at: capturedAt,
+          tags: tags,
         });
         break;
       case "stash-link":
@@ -771,9 +796,16 @@ chrome.omnibox.onInputEntered.addListener(async (text, disposition) => {
   } catch {}
 });
 
-// --- Message Handler (from popup / picker / snippet) ---
+// --- Message Handler (from popup / picker / snippet / content-script) ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "context_menu_target") {
+    const isVideo = looksLikeVideo(message.url);
+    chrome.contextMenus.update("triage-later", {
+      title: isVideo ? "Watch Later" : "Read Later",
+    });
+    return;
+  }
   if (message.type === "scrape_dom") {
     scrapePageDOM(message.tab)
       .then(sendResponse)
@@ -929,6 +961,28 @@ function escapeXml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function looksLikeVideo(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    
+    // Known video domains
+    if (host.includes("youtube.com") || host.includes("youtu.be") || 
+        host.includes("vimeo.com") || host.includes("twitch.tv") ||
+        host.includes("tiktok.com") || host.includes("netflix.com")) {
+      return true;
+    }
+    
+    // Video file extensions
+    const videoExts = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"];
+    return videoExts.some(ext => path.endsWith(ext));
+  } catch {
+    return false;
+  }
 }
 
 // --- Download router -----------------------------------------------------

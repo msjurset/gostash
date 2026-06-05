@@ -446,7 +446,7 @@ func stashFetchedBytes(
 	item.FileSize = size
 
 	// Extract text and metadata
-	result, err := extract.Run(bytes.NewReader(body), mt)
+	result, err := extract.Run(bytes.NewReader(body), mt, extract.Options{})
 	if err == nil {
 		item.ExtractedText = result.Text
 		if result.Title != "" && item.Title == "" {
@@ -455,6 +455,12 @@ func stashFetchedBytes(
 		if result.CapturedAt != nil {
 			t := result.CapturedAt.UTC()
 			item.CapturedAt = &t
+		}
+		// Add tags from extractor
+		for _, tag := range result.Tags {
+			if !item.HasTag(tag) {
+				item.Tags = append(item.Tags, model.Tag{Name: tag})
+			}
 		}
 	}
 

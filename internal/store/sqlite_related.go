@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -18,15 +20,10 @@ import (
 //	+4 per existing manual link (either direction)
 //	+5 if content_hash matches exactly (true duplicates)
 //	+2 if the URL host (sans `www.`) matches the source
+//	+6 * cosine_similarity (up to +6 conceptual boost)
 //
 // Archived items are excluded; the source item itself is excluded.
 // Ties are broken by recency (updated_at DESC).
-//
-// The tag/link/collection/hash scoring runs in one SQL query for
-// speed; the domain bump is applied client-side since SQL has no
-// portable URL parser and string-matching on `url LIKE '%domain%'`
-// produces false positives (e.g. `foo.example.com` matching `example.com`
-// substrings on unrelated pages).
 func (s *SQLiteStore) RelatedItems(ctx context.Context, source *model.Item, limit int) ([]model.Item, error) {
 	if source == nil || source.ID == "" {
 		return nil, fmt.Errorf("source item required")
@@ -35,22 +32,50 @@ func (s *SQLiteStore) RelatedItems(ctx context.Context, source *model.Item, limi
 		limit = 5
 	}
 
-	// Over-fetch from the SQL pass so the domain bump in Go has a
-	// candidate pool to re-rank against. 4× the requested limit
-	// gives the boost room to lift a same-domain item that
-	// originally scored just below the cutoff.
+	// 1. Get heuristic candidates from SQL (tags, collections, links, hash)
 	candidatePool := limit * 4
-	if candidatePool < 20 {
-		candidatePool = 20
+	if candidatePool < 40 {
+		candidatePool = 40
 	}
-
 	scored, err := s.relatedScored(ctx, source, candidatePool)
 	if err != nil {
 		return nil, err
 	}
 
-	// Domain bump in Go. Cheap: parse the source URL once, compare
-	// against each candidate's URL host.
+	// 2. Conceptual similarity (Vector)
+	_, sourceVector, err := s.GetItemEmbedding(ctx, source.ID)
+	if err == nil && len(sourceVector) > 0 {
+		// We have a source vector. Fetch ALL embeddings to find top
+		// conceptual matches that might not have shared tags/etc.
+		semanticResults, serr := s.SearchSemantic(ctx, sourceVector, model.ItemFilter{
+			Limit:           candidatePool,
+			IncludeArchived: false,
+		})
+		if serr == nil {
+			// Merge semantic results into our scored list.
+			// Map for easy lookup/update.
+			idMap := make(map[string]int)
+			for i, sc := range scored {
+				idMap[sc.item.ID] = i
+			}
+
+			for i, sem := range semanticResults {
+				if sem.ID == source.ID {
+					continue
+				}
+				// Boost based on rank in semantic results (up to +6 pts)
+				boost := 6.0 * (1.0 / float64(i+1))
+				if idx, ok := idMap[sem.ID]; ok {
+					scored[idx].score += int(boost)
+				} else {
+					// conceptual match not already in heuristic pool
+					scored = append(scored, scoredItem{item: sem, score: int(boost)})
+				}
+			}
+		}
+	}
+
+	// 3. Domain bump in Go.
 	if sourceHost := normalizedHost(source.URL); sourceHost != "" {
 		for i := range scored {
 			if normalizedHost(scored[i].item.URL) == sourceHost {
@@ -115,6 +140,7 @@ SELECT i.id, i.type, i.title, i.url, i.notes,
        i.source_path, i.store_path, i.content_hash, i.extracted_text,
        i.mime_type, i.file_size, i.metadata, i.created_at, i.updated_at,
        i.archived, i.thumbnail_path,
+       i.latitude, i.longitude, i.location_source, i.captured_at, i.chat_history,
        SUM(s.pts) AS score
 FROM items i
 JOIN scored s ON s.id = i.id
@@ -133,24 +159,19 @@ LIMIT ?`
 	if err != nil {
 		return nil, fmt.Errorf("related score query: %w", err)
 	}
-	// Drain the cursor BEFORE loading per-item relations. SQLite via
-	// database/sql can stall when a second query is issued on the
-	// shared pool while the parent cursor is still open — popular-tag
-	// items would just sit on a hung loader spinner indefinitely.
+	defer rows.Close()
+
 	var out []scoredItem
 	for rows.Next() {
 		item, score, err := s.scanRelatedRow(rows)
 		if err != nil {
-			rows.Close()
 			return nil, err
 		}
 		out = append(out, scoredItem{item: *item, score: score})
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
-	rows.Close()
 
 	for i := range out {
 		if err := s.loadRelations(ctx, &out[i].item); err != nil {
@@ -160,10 +181,6 @@ LIMIT ?`
 	return out, nil
 }
 
-// scanRelatedRow mirrors `scanItems`' column list with the extra
-// `score` trailing column from the GROUP BY. Kept inline rather than
-// generalizing scanItems because the score isn't part of model.Item
-// and only this caller wants it.
 func (s *SQLiteStore) scanRelatedRow(rows interface {
 	Scan(dest ...any) error
 }) (*model.Item, int, error) {
@@ -171,21 +188,31 @@ func (s *SQLiteStore) scanRelatedRow(rows interface {
 	var meta string
 	var archived int
 	var score int
+	var lat, lon sql.NullFloat64
+	var locSrc sql.NullString
+	var capturedAt sql.NullTime
+	var chatHistoryStr string
+
 	err := rows.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 		&archived, &item.ThumbnailPath,
+		&lat, &lon, &locSrc, &capturedAt, &chatHistoryStr,
 		&score,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("scan related: %w", err)
 	}
-	item.Metadata = []byte(meta)
+	item.Metadata = json.RawMessage(meta)
 	item.Archived = archived != 0
+	item.Location = buildLocation(lat, lon, locSrc)
+	item.CapturedAt = nullTimeToPtr(capturedAt)
+	if err := json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory); err != nil {
+		item.ChatHistory = nil
+	}
 	return &item, score, nil
 }
-
 func normalizedHost(rawURL string) string {
 	if rawURL == "" {
 		return ""

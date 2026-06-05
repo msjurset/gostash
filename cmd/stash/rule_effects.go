@@ -58,7 +58,7 @@ func ApplyRulesToItem(s store.Store, item *model.Item, userInput RuleApplyContex
 	}
 
 	for _, tag := range result.Tags {
-		if !hasTag(item.Tags, tag) {
+		if !item.HasTag(tag) {
 			item.Tags = append(item.Tags, model.Tag{Name: tag})
 		}
 	}

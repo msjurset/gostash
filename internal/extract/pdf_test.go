@@ -35,7 +35,7 @@ func TestPDFExtract(t *testing.T) {
 	defer f.Close()
 
 	e := &PDFExtractor{}
-	result, err := e.Extract(f, "application/pdf")
+	result, err := e.Extract(f, "application/pdf", Options{})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

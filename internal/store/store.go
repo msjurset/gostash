@@ -148,12 +148,20 @@ type Store interface {
 	// side / bottom, bird male / female, etc).
 	AttachItemFile(ctx context.Context, file *model.ItemFile) error
 	DetachItemFile(ctx context.Context, fileID int64) error
+	UpdateItemFileCaption(ctx context.Context, fileID int64, caption string) error
 	ListItemFiles(ctx context.Context, itemID string) ([]model.ItemFile, error)
 	ReorderItemFiles(ctx context.Context, itemID string, orderedIDs []int64) error
 	PromoteItemFile(ctx context.Context, fileID int64) error
 	// Merge sources' files + tags + notes into target. Sources are
 	// deleted on success. Returns the updated target item.
 	MergeItems(ctx context.Context, targetID string, sourceIDs []string) (*model.Item, error)
+
+	// Embeddings & Semantic Search
+	ListItemsMissingEmbeddings(ctx context.Context, limit int) ([]model.Item, error)
+	SaveItemEmbedding(ctx context.Context, itemID string, model string, vector []float32) error
+	GetItemEmbedding(ctx context.Context, itemID string) (modelName string, vector []float32, err error)
+	SearchSemantic(ctx context.Context, queryVector []float32, filter model.ItemFilter) ([]model.Item, error)
+	SearchHybrid(ctx context.Context, filter model.ItemFilter) ([]model.Item, error)
 
 	Checkpoint() error
 	Close() error

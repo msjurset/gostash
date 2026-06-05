@@ -36,6 +36,7 @@ func init() {
 	editCmd.Flags().Bool("clear-location", false, "Remove the item's stored location")
 	editCmd.Flags().Bool("ask-ai", false, "Ask a follow-up question of the AI (use with --ask-question)")
 	editCmd.Flags().String("ask-question", "", "The follow-up question to ask the AI")
+	editCmd.Flags().Bool("unarchive", false, "Restore the item from the archive")
 	rootCmd.AddCommand(editCmd)
 
 	rootCmd.AddCommand(&cobra.Command{
@@ -189,14 +190,14 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 		gClient := gemini.New()
 		contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
-		var images []gemini.Image
+		var media []gemini.Media
 
-		// Include primary image if any
-		if item.Type == model.TypeImage && item.StorePath != "" {
+		// Include primary media if any
+		if (item.Type == model.TypeImage || strings.HasPrefix(item.MimeType, "video/")) && item.StorePath != "" {
 			fs := openFileStore()
 			if rc, err := fs.Open(item.StorePath); err == nil {
 				if data, err := io.ReadAll(rc); err == nil {
-					images = append(images, gemini.Image{
+					media = append(media, gemini.Media{
 						Data:     data,
 						MimeType: item.MimeType,
 					})
@@ -205,14 +206,14 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Include attached images if any
+		// Include attached files if they are images or videos
 		if files, err := s.ListItemFiles(ctx, id); err == nil {
 			fs := openFileStore()
 			for _, f := range files {
-				if strings.HasPrefix(f.MimeType, "image/") {
+				if strings.HasPrefix(f.MimeType, "image/") || strings.HasPrefix(f.MimeType, "video/") {
 					if rc, err := fs.Open(f.ContentHash); err == nil {
 						if data, err := io.ReadAll(rc); err == nil {
-							images = append(images, gemini.Image{
+							media = append(media, gemini.Media{
 								Data:     data,
 								MimeType: f.MimeType,
 							})
@@ -223,10 +224,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		res, err := gClient.Query(ctx, apiKey, contextInfo, images, question)
+		res, err := gClient.Query(ctx, apiKey, contextInfo, media, question)
 		if err != nil {
-			return fmt.Errorf("ai query: %w", err)
+			return fmt.Errorf("gemini query: %w", err)
 		}
+
 
 		// Record usage for accounting/analytics
 		usageLedger := usage.New(config.Dir())
@@ -235,6 +237,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		now := time.Now().Format("2006-01-02 15:04")
 		sep := "\n\n--- Follow-up: " + now + " ---\n"
 		item.Notes += sep + question + "\n\n" + res.Answer
+	}
+
+	if cmd.Flags().Changed("unarchive") {
+		unarch, _ := cmd.Flags().GetBool("unarchive")
+		if unarch {
+			item.Archived = false
+		}
 	}
 
 	if err := s.UpdateItem(ctx, item); err != nil {

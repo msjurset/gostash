@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"time"
@@ -53,11 +54,34 @@ func Run(r io.Reader, mimeType string, opts Options) (*Result, error) {
 	// Only fall back to text extractor if it's actually text OR generic binary.
 	// We don't want to try and "extract text" from video/mp4 etc.
 	text := &TextExtractor{}
-	if text.Supports(mimeType) || mimeType == "application/octet-stream" {
+	if text.Supports(mimeType) {
+		return text.Extract(r, mimeType, opts)
+	}
+
+	if mimeType == "application/octet-stream" {
+		// Read a prefix to detect if it's binary content
+		var buf [8192]byte
+		n, _ := io.ReadAtLeast(r, buf[:], 1)
+		prefix := buf[:n]
+		if isBinary(prefix) {
+			return nil, fmt.Errorf("generic binary data (application/octet-stream) contains null bytes, skipping text extraction")
+		}
+		// Reconstruct the reader
+		r = io.MultiReader(bytes.NewReader(prefix), r)
 		return text.Extract(r, mimeType, opts)
 	}
 
 	return nil, fmt.Errorf("no extractor for mime type: %s", mimeType)
+}
+
+func isBinary(data []byte) bool {
+	// A simple heuristic: check for null bytes in the first few kilobytes
+	for _, b := range data {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

@@ -158,3 +158,15 @@ func TestRunFallback(t *testing.T) {
 		t.Errorf("text = %q, want %q", result.Text, "plain text content")
 	}
 }
+
+func TestRunFallbackBinary(t *testing.T) {
+	// Binary content containing a null byte
+	binaryData := "some binary content\x00with null byte"
+	_, err := Run(strings.NewReader(binaryData), "application/octet-stream", Options{})
+	if err == nil {
+		t.Error("expected error for binary content fallback, got nil")
+	} else if !strings.Contains(err.Error(), "contains null bytes") {
+		t.Errorf("expected error about null bytes, got: %v", err)
+	}
+}
+

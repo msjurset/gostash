@@ -81,6 +81,38 @@ func mimeFromExt(ext string) string {
 		return MIMEDocx
 	case ".eml":
 		return MIMEEmail
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".webm":
+		return "video/webm"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".m4a":
+		return "audio/mp4"
+	case ".wav":
+		return "audio/wav"
+	case ".flac":
+		return "audio/flac"
+	case ".ogg", ".opus":
+		return "audio/ogg"
+	case ".aac":
+		return "audio/aac"
+	case ".zip":
+		return "application/zip"
+	case ".tar":
+		return "application/x-tar"
+	case ".gz":
+		return "application/gzip"
+	case ".rar":
+		return "application/x-rar-compressed"
+	case ".7z":
+		return "application/x-7z-compressed"
 	default:
 		return "application/octet-stream"
 	}

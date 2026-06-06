@@ -13,7 +13,9 @@ func (e *TextExtractor) Supports(mimeType string) bool {
 }
 
 func (e *TextExtractor) Extract(r io.Reader, mimeType string, opts Options) (*Result, error) {
-	data, err := io.ReadAll(r)
+	// Cap reading at 5MB to prevent memory exhaustion on massive text files
+	limitReader := io.LimitReader(r, 5 * 1024 * 1024)
+	data, err := io.ReadAll(limitReader)
 	if err != nil {
 		return nil, err
 	}

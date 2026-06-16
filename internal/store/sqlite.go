@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const itemColumns = `id, type, title, url, notes, source_path, store_path, content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at, archived, thumbnail_path, latitude, longitude, location_source, captured_at, chat_history, caption`
+const itemColumns = "id, type, title, url, notes, source_path, store_path, content_hash, extracted_text, mime_type, file_size, metadata, created_at, updated_at, archived, thumbnail_path, latitude, longitude, location_source, captured_at, chat_history, caption, speaker_map"
 
 // SQLiteStore implements Store using SQLite with FTS5.
 type SQLiteStore struct {
@@ -124,6 +124,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateItemChatHistory(); err != nil {
 		return fmt.Errorf("migrate items.chat_history: %w", err)
 	}
+	if err := s.migrateItemSpeakerMap(); err != nil {
+		return fmt.Errorf("migrate items.speaker_map: %w", err)
+	}
 
 	return nil
 }
@@ -133,6 +136,14 @@ func (s *SQLiteStore) migrate() error {
 func (s *SQLiteStore) migrateItemChatHistory() error {
 	return s.addColumnIfMissing("items", "chat_history",
 		`ALTER TABLE items ADD COLUMN chat_history TEXT NOT NULL DEFAULT '[]'`,
+	)
+}
+
+// migrateItemSpeakerMap adds the speaker_map column to items for diarization metadata.
+// Stored as a JSON string. Idempotent.
+func (s *SQLiteStore) migrateItemSpeakerMap() error {
+	return s.addColumnIfMissing("items", "speaker_map",
+		`ALTER TABLE items ADD COLUMN speaker_map TEXT NOT NULL DEFAULT '{}'`,
 	)
 }
 
@@ -689,11 +700,16 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 		chatHist = []byte("[]")
 	}
 
+	speakerMap, err := json.Marshal(item.SpeakerMap)
+	if err != nil {
+		speakerMap = []byte("{}")
+	}
+
 	lat, lon, locSrc := splitLocation(item.Location)
 	captured := ptrToNullTime(item.CapturedAt)
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO items (%s)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, itemColumns),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, itemColumns),
 		item.ID, item.Type, item.Title, item.URL, item.Notes, item.SourcePath,
 		item.StorePath, item.ContentHash, item.ExtractedText, item.MimeType,
 		item.FileSize, meta, item.CreatedAt, item.UpdatedAt,
@@ -701,6 +717,7 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 		item.ThumbnailPath,
 		lat, lon, locSrc, captured, string(chatHist),
 		item.Caption,
+		string(speakerMap),
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -721,10 +738,12 @@ func (s *SQLiteStore) CreateItem(ctx context.Context, item *model.Item) error {
 // GetItem fetches a single item by ID with its tags and collections.
 func (s *SQLiteStore) GetItem(ctx context.Context, id string) (*model.Item, error) {
 	// Try exact match first, then prefix match for short IDs
-	row := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM items WHERE id = ?", itemColumns), id)
+	query := fmt.Sprintf("SELECT %s FROM items WHERE id = ?", itemColumns)
+	row := s.db.QueryRowContext(ctx, query, id)
 	item, err := s.scanItem(row)
 	if err == sql.ErrNoRows && len(id) >= 6 {
-		row = s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM items WHERE id LIKE ?", itemColumns), id+"%")
+		query = fmt.Sprintf("SELECT %s FROM items WHERE id LIKE ?", itemColumns)
+		row = s.db.QueryRowContext(ctx, query, id+"%")
 		item, err = s.scanItem(row)
 	}
 	if err == sql.ErrNoRows {
@@ -918,19 +937,25 @@ func (s *SQLiteStore) UpdateItem(ctx context.Context, item *model.Item) error {
 		chatHist = []byte("[]")
 	}
 
+	speakerMap, err := json.Marshal(item.SpeakerMap)
+	if err != nil {
+		speakerMap = []byte("{}")
+	}
+
 	lat, lon, locSrc := splitLocation(item.Location)
 	captured := ptrToNullTime(item.CapturedAt)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE items SET type=?, title=?, url=?, notes=?, source_path=?, store_path=?,
 			content_hash=?, extracted_text=?, mime_type=?, file_size=?, metadata=?, updated_at=?,
 			thumbnail_path=?, latitude=?, longitude=?, location_source=?, captured_at=?, chat_history=?, archived=?,
-			caption=?
+			caption=?, speaker_map=?
 		WHERE id=?`,
 		item.Type, item.Title, item.URL, item.Notes, item.SourcePath, item.StorePath,
 		item.ContentHash, item.ExtractedText, item.MimeType, item.FileSize,
 		meta, item.UpdatedAt, item.ThumbnailPath,
 		lat, lon, locSrc, captured, string(chatHist), item.Archived,
 		item.Caption,
+		string(speakerMap),
 		item.ID,
 	)
 	if err != nil {
@@ -1478,6 +1503,7 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	var locSrc sql.NullString
 	var capturedAt sql.NullTime
 	var chatHistoryStr string
+	var speakerMapStr string
 	err := row.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 		&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
@@ -1486,9 +1512,10 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 		&lat, &lon, &locSrc,
 		&capturedAt, &chatHistoryStr,
 		&item.Caption,
+		&speakerMapStr,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan item [TRACE-99-SINGULAR]: %w", err)
 	}
 	item.Metadata = json.RawMessage(meta)
 	item.Archived = archived != 0
@@ -1496,6 +1523,9 @@ func (s *SQLiteStore) scanItem(row *sql.Row) (*model.Item, error) {
 	item.CapturedAt = nullTimeToPtr(capturedAt)
 	if chatHistoryStr != "" {
 		_ = json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory)
+	}
+	if speakerMapStr != "" {
+		_ = json.Unmarshal([]byte(speakerMapStr), &item.SpeakerMap)
 	}
 	return &item, nil
 }
@@ -1510,6 +1540,7 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		var locSrc sql.NullString
 		var capturedAt sql.NullTime
 		var chatHistoryStr string
+		var speakerMapStr string
 		err := rows.Scan(
 			&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
 			&item.SourcePath, &item.StorePath, &item.ContentHash, &item.ExtractedText,
@@ -1518,9 +1549,10 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 			&lat, &lon, &locSrc,
 			&capturedAt, &chatHistoryStr,
 			&item.Caption,
+			&speakerMapStr,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("scan item: %w", err)
+			return nil, fmt.Errorf("scan item [TRACE-99]: %w", err)
 		}
 		item.Metadata = json.RawMessage(meta)
 		item.Archived = archived != 0
@@ -1528,6 +1560,9 @@ func (s *SQLiteStore) scanItems(rows *sql.Rows) ([]model.Item, error) {
 		item.CapturedAt = nullTimeToPtr(capturedAt)
 		if chatHistoryStr != "" {
 			_ = json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory)
+		}
+		if speakerMapStr != "" {
+			_ = json.Unmarshal([]byte(speakerMapStr), &item.SpeakerMap)
 		}
 		items = append(items, item)
 	}

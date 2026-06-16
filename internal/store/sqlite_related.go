@@ -141,6 +141,7 @@ SELECT i.id, i.type, i.title, i.url, i.notes,
        i.mime_type, i.file_size, i.metadata, i.created_at, i.updated_at,
        i.archived, i.thumbnail_path,
        i.latitude, i.longitude, i.location_source, i.captured_at, i.chat_history,
+       i.caption, i.speaker_map,
        SUM(s.pts) AS score
 FROM items i
 JOIN scored s ON s.id = i.id
@@ -192,6 +193,7 @@ func (s *SQLiteStore) scanRelatedRow(rows interface {
 	var locSrc sql.NullString
 	var capturedAt sql.NullTime
 	var chatHistoryStr string
+	var speakerMapStr string
 
 	err := rows.Scan(
 		&item.ID, &item.Type, &item.Title, &item.URL, &item.Notes,
@@ -199,6 +201,8 @@ func (s *SQLiteStore) scanRelatedRow(rows interface {
 		&item.MimeType, &item.FileSize, &meta, &item.CreatedAt, &item.UpdatedAt,
 		&archived, &item.ThumbnailPath,
 		&lat, &lon, &locSrc, &capturedAt, &chatHistoryStr,
+		&item.Caption,
+		&speakerMapStr,
 		&score,
 	)
 	if err != nil {
@@ -210,6 +214,9 @@ func (s *SQLiteStore) scanRelatedRow(rows interface {
 	item.CapturedAt = nullTimeToPtr(capturedAt)
 	if err := json.Unmarshal([]byte(chatHistoryStr), &item.ChatHistory); err != nil {
 		item.ChatHistory = nil
+	}
+	if speakerMapStr != "" {
+		_ = json.Unmarshal([]byte(speakerMapStr), &item.SpeakerMap)
 	}
 	return &item, score, nil
 }

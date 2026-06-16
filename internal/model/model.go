@@ -66,6 +66,7 @@ type Item struct {
 	Links         []Link          `json:"links,omitempty"`
 	Files         []ItemFile      `json:"files,omitempty"`
 	ChatHistory   []ChatMessage   `json:"chat_history,omitempty"`
+	SpeakerMap    map[string]string `json:"speaker_map,omitempty"`
 }
 
 // HasTag reports whether the item has a tag with the given name (case-sensitive).

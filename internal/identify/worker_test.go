@@ -1,6 +1,10 @@
 package identify
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/msjurset/gostash/internal/gemini"
+)
 
 // Pin the title-overwrite heuristic. This is the highest-risk
 // piece in the worker — too eager and we destroy user edits;
@@ -48,5 +52,56 @@ func TestGetVideoDuration(t *testing.T) {
 	_, err := getVideoDuration([]byte("not a valid video payload"))
 	if err == nil {
 		t.Error("expected error from getVideoDuration for invalid payload, got nil")
+	}
+}
+
+func TestSelectPrompt(t *testing.T) {
+	cases := []struct {
+		name     string
+		media    []gemini.Media
+		expected string
+	}{
+		{
+			name:     "empty media list uses identify prompt",
+			media:    []gemini.Media{},
+			expected: gemini.DefaultIdentifyPrompt,
+		},
+		{
+			name: "image media uses identify prompt",
+			media: []gemini.Media{
+				{MimeType: "image/jpeg"},
+			},
+			expected: gemini.DefaultIdentifyPrompt,
+		},
+		{
+			name: "audio media uses transcribe prompt",
+			media: []gemini.Media{
+				{MimeType: "audio/mpeg"},
+			},
+			expected: gemini.DefaultTranscribePrompt,
+		},
+		{
+			name: "video media uses video transcribe prompt",
+			media: []gemini.Media{
+				{MimeType: "video/mp4"},
+			},
+			expected: gemini.DefaultVideoTranscribePrompt,
+		},
+		{
+			name: "multiple media starts with image uses identify prompt",
+			media: []gemini.Media{
+				{MimeType: "image/png"},
+				{MimeType: "audio/wav"},
+			},
+			expected: gemini.DefaultIdentifyPrompt,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selectPrompt(tc.media)
+			if got != tc.expected {
+				t.Errorf("selectPrompt() = %q, want %q", got, tc.expected)
+			}
+		})
 	}
 }

@@ -310,7 +310,9 @@ func (w *Worker) processOne(ctx context.Context, item *model.Item, key string) e
 	callCtx, cancel := context.WithTimeout(context.Background(), w.opts.CallTimeout)
 	defer cancel()
 
-	result, err := w.gem.Identify(callCtx, key, media, gemini.DefaultIdentifyPrompt)
+	prompt := selectPrompt(media)
+
+	result, err := w.gem.Identify(callCtx, key, media, prompt)
 
 	// Record usage even on parse-empty responses or errors so cost
 	// tracking reflects all paid calls (like safety filter blocks).
@@ -589,4 +591,16 @@ func (w *Worker) clearAttempts(id string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.attempts, id)
+}
+
+func selectPrompt(media []gemini.Media) string {
+	prompt := gemini.DefaultIdentifyPrompt
+	if len(media) > 0 {
+		if strings.HasPrefix(media[0].MimeType, "audio/") {
+			prompt = gemini.DefaultTranscribePrompt
+		} else if strings.HasPrefix(media[0].MimeType, "video/") {
+			prompt = gemini.DefaultVideoTranscribePrompt
+		}
+	}
+	return prompt
 }

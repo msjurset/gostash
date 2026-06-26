@@ -15,14 +15,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/credentials"
 	"github.com/msjurset/gostash/internal/exif"
 	"github.com/msjurset/gostash/internal/filestore"
+	"github.com/msjurset/gostash/internal/gemini"
+	"github.com/msjurset/gostash/internal/identify"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
 	"github.com/msjurset/gostash/internal/thumbsync"
-	"github.com/msjurset/gostash/internal/credentials"
-	"github.com/msjurset/gostash/internal/gemini"
-	"github.com/msjurset/gostash/internal/identify"
+	"github.com/msjurset/gostash/internal/usage"
 )
 
 // Server wires the HTTP API to a Store + FileStore. The struct is
@@ -34,6 +36,7 @@ type Server struct {
 	Token         string
 	NewItemID     func() string
 	NewSnippetID  func() string
+	ApplyRules    func(item *model.Item, userTitle, userNote, userCollection string) (skip bool, postSave func())
 	// UsageLedgerPath is the absolute path to the daemon's Gemini
 	// usage JSON file (typically ~/.stash/gemini-usage.json). When
 	// set, `GET /gemini-usage` serves its contents; when empty or
@@ -42,6 +45,8 @@ type Server struct {
 	// their per-device totals without each running its own ledger.
 	UsageLedgerPath string
 	UsageRecorder   identify.UsageRecorder
+	UsageLedger     *usage.Ledger
+	IsPaidRequest   func(r *http.Request) bool
 }
 
 // Handler returns the HTTP mux ready to wrap in http.Server. The
@@ -80,14 +85,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /items/{id}/files/{fid}/primary", s.handlePromoteItemFile)
 	mux.HandleFunc("GET /items/{id}/files/{fid}/blob", s.handleItemFileBlob)
 	mux.HandleFunc("POST /items/merge", s.handleMergeItems)
-	mux.HandleFunc("POST /items/{id}/chat", s.handleChat)
-	mux.HandleFunc("POST /ask", s.handleAsk)
-	mux.HandleFunc("POST /ai/fix", s.handleAIFix)
-	mux.HandleFunc("POST /ai/summary", s.handleAISummary)
-	mux.HandleFunc("POST /ai/tags", s.handleAITags)
+	mux.Handle("POST /items/{id}/chat", s.requirePaidTier(http.HandlerFunc(s.handleChat)))
+	mux.Handle("POST /ask", s.requirePaidTier(http.HandlerFunc(s.handleAsk)))
+	mux.Handle("POST /ai/fix", s.requirePaidTier(http.HandlerFunc(s.handleAIFix)))
+	mux.Handle("POST /ai/summary", s.requirePaidTier(http.HandlerFunc(s.handleAISummary)))
+	mux.Handle("POST /ai/tags", s.requirePaidTier(http.HandlerFunc(s.handleAITags)))
 	mux.HandleFunc("GET /pricing", s.handlePricing)
+	mux.HandleFunc("GET /config", s.handleConfig)
 	mux.HandleFunc("GET /gemini-usage", s.handleGeminiUsage)
 	mux.HandleFunc("POST /gemini-usage", s.handleRecordGeminiUsage)
+	mux.HandleFunc("POST /api/sync-logs", s.handleSyncUsageLogs)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 
 	// Compose: /healthz lands on publicMux, everything else hits the
@@ -146,6 +153,7 @@ type captureJSONBody struct {
 	Text       string   `json:"text,omitempty"`
 	Title      string   `json:"title,omitempty"`
 	Notes      string   `json:"notes,omitempty"`
+	Caption    string   `json:"caption,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	Collection string   `json:"collection,omitempty"`
 	Language   string   `json:"language,omitempty"`
@@ -161,7 +169,7 @@ func (s *Server) handleCaptureJSON(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "either url or text is required")
 		return
 	}
-	item := s.buildBaseItem(body.Title, body.Notes, body.Tags, body.Collection)
+	item := s.buildBaseItem(body.Title, body.Notes, body.Caption, body.Tags, body.Collection)
 	switch {
 	case body.URL != "":
 		item.Type = model.TypeURL
@@ -179,9 +187,21 @@ func (s *Server) handleCaptureJSON(w http.ResponseWriter, r *http.Request) {
 		// pipeline; left to a follow-up edit if the client supplied
 		// one. Keeps the API surface here small.
 	}
+	var postSave func()
+	if s.ApplyRules != nil {
+		var skip bool
+		skip, postSave = s.ApplyRules(item, body.Title, body.Notes, body.Collection)
+		if skip {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "skipped"})
+			return
+		}
+	}
 	if err := s.Store.CreateItem(r.Context(), item); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if postSave != nil {
+		postSave()
 	}
 	// URL captures from the browser extension / mobile share / any
 	// HTTP client don't carry a thumbnail — kick the extraction
@@ -242,7 +262,7 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	tags := splitCSV(r.FormValue("tags"))
-	item := s.buildBaseItem(r.FormValue("title"), r.FormValue("notes"), tags, r.FormValue("collection"))
+	item := s.buildBaseItem(r.FormValue("title"), r.FormValue("notes"), r.FormValue("caption"), tags, r.FormValue("collection"))
 	item.Type = itemType
 	item.URL = r.FormValue("url")
 	item.SourcePath = header.Filename
@@ -313,9 +333,21 @@ func (s *Server) handleCaptureMultipart(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	var postSave func()
+	if s.ApplyRules != nil {
+		var skip bool
+		skip, postSave = s.ApplyRules(item, r.FormValue("title"), r.FormValue("notes"), r.FormValue("collection"))
+		if skip {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "skipped"})
+			return
+		}
+	}
 	if err := s.Store.CreateItem(r.Context(), item); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if postSave != nil {
+		postSave()
 	}
 	// For image uploads, generate a small JPEG thumbnail from the
 	// stored blob and persist it under thumbnail_path. Async so the
@@ -350,15 +382,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	filter.Query = r.URL.Query().Get("q")
 
 	if filter.Semantic && filter.Query != "" {
+		if s.checkBudgetExceeded(w) {
+			return
+		}
 		apiKey, err := credentials.Load(credentials.KeyGeminiAPIKey)
 		if err != nil {
 			writeError(w, http.StatusFailedDependency, "Gemini API key missing: "+err.Error())
 			return
 		}
 		client := gemini.New()
+		cfg := config.Get()
+		paidKey := credentials.ResolvePaidKey(cfg.PaidCredential)
+		client.WithFailover(paidKey, &paidFailoverApprover{store: s.Store, paid: s.isPaidRequest(r)}, "search")
 		res, err := client.EmbedContent(r.Context(), apiKey, filter.Query)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "embedding query failed: "+err.Error())
+			status := http.StatusInternalServerError
+			if gemini.IsKeyRejected(err) || errors.Is(err, gemini.ErrMissingKey) {
+				status = http.StatusFailedDependency
+			}
+			writeError(w, status, "embedding query failed: "+err.Error())
 			return
 		}
 		if s.UsageRecorder != nil {
@@ -393,11 +435,14 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 type patchItemBody struct {
 	Title         *string   `json:"title,omitempty"`
 	Notes         *string   `json:"notes,omitempty"`
+	Caption       *string   `json:"caption,omitempty"`
 	URL           *string   `json:"url,omitempty"`
-	Tags          *[]string `json:"tags,omitempty"`
-	Collection    *string   `json:"collection,omitempty"`
-	ExtractedText *string   `json:"extracted_text,omitempty"`
-	Archived      *bool     `json:"archived,omitempty"`
+	Tags          *[]string          `json:"tags,omitempty"`
+	Collection    *string            `json:"collection,omitempty"`
+	ExtractedText *string            `json:"extracted_text,omitempty"`
+	Archived      *bool              `json:"archived,omitempty"`
+	SpeakerMap    *map[string]string `json:"speaker_map,omitempty"`
+	ChatHistory   *[]model.ChatMessage `json:"chat_history,omitempty"`
 }
 
 // PATCH /items/{id} — partial update of an item's metadata.
@@ -424,6 +469,9 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 	if body.Notes != nil {
 		item.Notes = *body.Notes
 	}
+	if body.Caption != nil {
+		item.Caption = *body.Caption
+	}
 	if body.URL != nil {
 		item.URL = strings.TrimSpace(*body.URL)
 	}
@@ -436,6 +484,12 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item.Archived = *body.Archived
+	}
+	if body.SpeakerMap != nil {
+		item.SpeakerMap = *body.SpeakerMap
+	}
+	if body.ChatHistory != nil {
+		item.ChatHistory = *body.ChatHistory
 	}
 	if body.Tags != nil {
 		// Build []model.Tag from the supplied names. UpdateItem's
@@ -751,6 +805,16 @@ func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(defaultPricingJSON))
 }
 
+// GET /config — serves key configuration options like paid tier status and budget limits.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := config.Get()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"paid_tier_enabled":      cfg.PaidTierEnabled,
+		"max_daily_budget_usd":   cfg.MaxDailyBudgetUSD,
+		"max_monthly_budget_usd": cfg.MaxMonthlyBudgetUSD,
+	})
+}
+
 // GET /gemini-usage — serves the daemon's identify-spend ledger
 // from UsageLedgerPath (typically ~/.stash/gemini-usage.json).
 // When the file is missing (fresh install, daemon hasn't done any
@@ -791,6 +855,27 @@ func (s *Server) handleRecordGeminiUsage(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /api/sync-logs — syncs bulk offline usage logs from external clients (Android)
+func (s *Server) handleSyncUsageLogs(w http.ResponseWriter, r *http.Request) {
+	var logs []model.UsageLog
+	if err := json.NewDecoder(r.Body).Decode(&logs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	newlyRegistered, err := s.Store.RegisterUsageLogs(r.Context(), logs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to register usage logs: "+err.Error())
+		return
+	}
+	if s.UsageRecorder != nil {
+		for _, log := range newlyRegistered {
+			s.UsageRecorder.Record(log.Model, log.PromptTokens, log.CandidateTokens)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+
 // POST /resolve — resolves an op:// reference (from 1Password) to a
 // plaintext secret. Used by the Android app to get the Gemini API
 // key without the phone needing access to the op CLI directly.
@@ -815,6 +900,9 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	if s.checkBudgetExceeded(w) {
+		return
+	}
 	id := r.PathValue("id")
 	var body struct {
 		Question string `json:"question"`
@@ -837,6 +925,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := gemini.New()
+	cfg := config.Get()
+	paidKey := credentials.ResolvePaidKey(cfg.PaidCredential)
+	client.WithFailover(paidKey, &paidFailoverApprover{store: s.Store, paid: s.isPaidRequest(r)}, "chat")
 	contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
 	var media []gemini.Media
 
@@ -913,6 +1004,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // POST /ask
 // Body: { "question": "..." }
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
+	if s.checkBudgetExceeded(w) {
+		return
+	}
 	var body struct {
 		Question string `json:"question"`
 	}
@@ -932,12 +1026,19 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := gemini.New()
+	cfg := config.Get()
+	paidKey := credentials.ResolvePaidKey(cfg.PaidCredential)
+	client.WithFailover(paidKey, &paidFailoverApprover{store: s.Store, paid: s.isPaidRequest(r)}, "ask")
 	ctx := r.Context()
 
 	// 1. Embed the question for semantic retrieval
 	res, err := client.EmbedContent(ctx, apiKey, body.Question)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "embedding question failed: "+err.Error())
+		status := http.StatusInternalServerError
+		if gemini.IsKeyRejected(err) || errors.Is(err, gemini.ErrMissingKey) {
+			status = http.StatusFailedDependency
+		}
+		writeError(w, status, "embedding question failed: "+err.Error())
 		return
 	}
 	if s.UsageRecorder != nil {
@@ -1011,7 +1112,9 @@ const defaultPricingJSON = `{
     "gemini-2.5-flash-lite": { "input_per_million": 0.10, "output_per_million": 0.40 },
     "gemini-2.5-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 },
     "gemini-3-flash":        { "input_per_million": 0.50, "output_per_million": 3.00 },
-    "gemini-3-pro":          { "input_per_million": 2.00, "output_per_million": 12.00 }
+    "gemini-3-pro":          { "input_per_million": 2.00, "output_per_million": 12.00 },
+    "gemini-3.1-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
+    "gemini-3.1-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 }
   }
 }
 `
@@ -1020,12 +1123,13 @@ const defaultPricingJSON = `{
 // helpers
 // ───────────────────────────────────────────────────────────
 
-func (s *Server) buildBaseItem(title, notes string, tags []string, collection string) *model.Item {
+func (s *Server) buildBaseItem(title, notes, caption string, tags []string, collection string) *model.Item {
 	now := time.Now().UTC()
 	item := &model.Item{
 		ID:        s.NewItemID(),
 		Title:     strings.TrimSpace(title),
 		Notes:     strings.TrimSpace(notes),
+		Caption:   strings.TrimSpace(caption),
 		Metadata:  json.RawMessage("{}"),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1111,6 +1215,44 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errBody{Error: msg})
 }
 
+type paidFailoverApprover struct {
+	store store.Store
+	paid  bool
+}
+
+func (a *paidFailoverApprover) IsFailoverApproved(ctx context.Context, operation string) (bool, error) {
+	if a.paid {
+		return true, nil
+	}
+	return a.store.IsFailoverApproved(ctx, operation)
+}
+
+func (s *Server) isPaidRequest(r *http.Request) bool {
+	if s.IsPaidRequest != nil {
+		return s.IsPaidRequest(r)
+	}
+	return r.Header.Get("X-Stash-Paid") == "true" || r.Header.Get("X-Stash-Paid-Tier") == "true" || config.Get().PaidTierEnabled
+}
+
+func (s *Server) checkBudgetExceeded(w http.ResponseWriter) bool {
+	if s.UsageLedger == nil {
+		return false
+	}
+	cfg := config.Get()
+	exceeded, err := s.UsageLedger.IsBudgetExceeded(cfg.MaxDailyBudgetUSD, cfg.MaxMonthlyBudgetUSD)
+	if err != nil {
+		log.Printf("[server] budget check error: %v", err)
+		return false
+	}
+	if exceeded {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("budget-exceeded"))
+		return true
+	}
+	return false
+}
+
 // shutdownWithGrace gives in-flight requests a moment to finish when
 // the user hits Ctrl-C. Pulled out so the cobra command can call it
 // from a signal handler.
@@ -1139,6 +1281,9 @@ func (s *Server) handleAITags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAITextTransform(w http.ResponseWriter, r *http.Request, kind string) {
+	if s.checkBudgetExceeded(w) {
+		return
+	}
 	var body struct {
 		Text string `json:"text"`
 	}
@@ -1154,6 +1299,9 @@ func (s *Server) handleAITextTransform(w http.ResponseWriter, r *http.Request, k
 	}
 
 	client := gemini.New()
+	cfg := config.Get()
+	paidKey := credentials.ResolvePaidKey(cfg.PaidCredential)
+	client.WithFailover(paidKey, &paidFailoverApprover{store: s.Store, paid: s.isPaidRequest(r)}, "transform")
 	var res gemini.QueryResult
 	var queryErr error
 

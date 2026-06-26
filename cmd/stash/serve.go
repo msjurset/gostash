@@ -19,6 +19,7 @@ import (
 	"github.com/msjurset/gostash/internal/embed"
 	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/identify"
+	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/server"
 	"github.com/msjurset/gostash/internal/usage"
 
@@ -155,8 +156,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Token:           token,
 		NewItemID:       newFetchID,
 		NewSnippetID:    newFetchID,
+		ApplyRules: func(item *model.Item, userTitle, userNote, userCollection string) (skip bool, postSave func()) {
+			result := ApplyRulesToItem(s, item, RuleApplyContext{
+				UserTitle:      userTitle,
+				UserNote:       userNote,
+				UserCollection: userCollection,
+			})
+			if result.Skipped {
+				return true, nil
+			}
+			EnsureRuleCollections(context.Background(), s, result)
+			return false, func() {
+				FirePostSaveRuleEffects(context.Background(), s, item, result)
+			}
+		},
 		UsageLedgerPath: usageLedger.Path(),
 		UsageRecorder:   usageLedger,
+		UsageLedger:     usageLedger,
 	}
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -194,7 +210,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// refresh-gemini` runs. See internal/identify for the full
 	// defensive-behavior contract.
 	identifyWorker := identify.New(s, fs, gemini.New(), identify.Options{
-		Recorder: usageLedger,
+		Recorder:                usageLedger,
+		MaxVideoDurationMinutes: config.Get().MaxVideoDurationMinutes,
 	})
 	workers.Add(1)
 	go func() {

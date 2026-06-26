@@ -11,21 +11,37 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type OperationConfig struct {
+	PrimaryModel string   `toml:"primary_model" json:"primary_model"`
+	AIModels     []string `toml:"ai_models" json:"ai_models"`
+}
+
 // Config holds all configurable paths and capture-time rules.
 type Config struct {
-	DataDir     string      `toml:"data_dir"`
-	DBPath      string      `toml:"db_path"`
-	FilesDir    string      `toml:"files_dir"`
-	BackupDir   string      `toml:"backup_dir"`
-	ImageViewer string      `toml:"image_viewer"`
-	Exclusions  []Exclusion `toml:"exclusions"`
+	DataDir     string      `toml:"data_dir" json:"data_dir"`
+	DBPath      string      `toml:"db_path" json:"db_path"`
+	FilesDir    string      `toml:"files_dir" json:"files_dir"`
+	BackupDir   string      `toml:"backup_dir" json:"backup_dir"`
+	ImageViewer string      `toml:"image_viewer" json:"image_viewer,omitempty"`
+	Exclusions  []Exclusion `toml:"exclusions" json:"exclusions"`
 	// 1Password reference for the Gemini API key. NOT the secret —
 	// just the op://vault/item/field path. The secret itself lives
 	// in the system keychain (see internal/credentials). Stored
 	// here so `stash auth refresh-gemini` can re-resolve without
 	// arguments — used by the deploy hook to re-prime the Keychain
 	// ACL after the binary's cdhash changes.
-	GeminiOpRef string `toml:"gemini_op_ref,omitempty"`
+	GeminiOpRef string `toml:"gemini_op_ref,omitempty" json:"gemini_op_ref,omitempty"`
+
+	// Cost controls and AI model fallback configurations
+	PrimaryModel            string                     `toml:"primary_model" json:"primary_model"`
+	AIModels                []string                   `toml:"ai_models" json:"ai_models"`
+	Operations              map[string]OperationConfig `toml:"operations" json:"operations"`
+	MaxMonthlyBudgetUSD     float64                    `toml:"max_monthly_budget_usd" json:"max_monthly_budget_usd"`
+	MaxDailyBudgetUSD       float64                    `toml:"max_daily_budget_usd" json:"max_daily_budget_usd"`
+	MaxVideoDurationMinutes int                        `toml:"max_video_duration_minutes" json:"max_video_duration_minutes"`
+	PaidTierEnabled         bool                       `toml:"paid_tier_enabled" json:"paid_tier_enabled"`
+	PaidCredential          string                     `toml:"paid_credential" json:"-"`
+	PaidApprovalDurationHours int                      `toml:"paid_approval_duration_hours" json:"paid_approval_duration_hours"`
 }
 
 // Exclusion redacts the URL field on items captured from matching
@@ -48,8 +64,9 @@ type Exclusion struct {
 }
 
 var (
-	cfg     Config
-	cfgOnce sync.Once
+	cfg       Config
+	cfgLoaded bool
+	cfgMu     sync.RWMutex
 )
 
 func configDir() string {
@@ -87,7 +104,9 @@ func expandHome(path string) string {
 }
 
 func load() Config {
-	c := Config{}
+	c := Config{
+		PaidTierEnabled: false,
+	}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		toml.Unmarshal(data, &c)
 	}
@@ -117,12 +136,41 @@ func load() Config {
 		c.BackupDir = filepath.Join(c.DataDir, "backups")
 	}
 
+	if c.PrimaryModel == "" {
+		c.PrimaryModel = "gemini-2.5-flash"
+	}
+	if len(c.AIModels) == 0 {
+		c.AIModels = []string{"gemini-2.5-flash"}
+	}
+	if c.Operations == nil {
+		c.Operations = make(map[string]OperationConfig)
+	}
+	if c.MaxVideoDurationMinutes <= 0 {
+		c.MaxVideoDurationMinutes = 30
+	}
+	if c.PaidApprovalDurationHours <= 0 {
+		c.PaidApprovalDurationHours = 24
+	}
+
 	return c
 }
 
 // Get returns the loaded configuration, reading from disk on first call.
 func Get() Config {
-	cfgOnce.Do(func() { cfg = load() })
+	cfgMu.RLock()
+	if cfgLoaded {
+		c := cfg
+		cfgMu.RUnlock()
+		return c
+	}
+	cfgMu.RUnlock()
+
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	if !cfgLoaded {
+		cfg = load()
+		cfgLoaded = true
+	}
 	return cfg
 }
 
@@ -224,23 +272,53 @@ func (e Exclusion) apply(rawURL string) string {
 // preserve them. The config file is mostly machine-edited via the
 // Mac UI now, so this is acceptable — but flag it in the warning.
 func Save(c Config) error {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
 	if err := os.MkdirAll(configDir(), 0755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(configPath(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+
+	path := configPath()
+	tmpFile, err := os.CreateTemp(configDir(), "config-*.toml")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	enc := toml.NewEncoder(f)
+	tmpName := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpName)
+	}()
+
+	enc := toml.NewEncoder(tmpFile)
 	enc.Indent = ""
-	return enc.Encode(&c)
+	if err := enc.Encode(&c); err != nil {
+		return err
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+
+	cfg = c
+	cfgLoaded = true
+	return nil
 }
 
 // Reload forces the next Get() to re-read the file. Used after
 // Save() so the in-process cached config doesn't lag the disk.
 func Reload() {
-	cfgOnce = sync.Once{}
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	cfg = load()
+	cfgLoaded = true
 }
 
 // WriteDefault writes a default config file if one doesn't exist.

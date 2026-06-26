@@ -21,16 +21,22 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/msjurset/gostash/internal/config"
 )
 
 // DefaultModel matches the Mac client's default. Override per call
 // via Client.Model if a fallback chain needs to route some calls
 // to Pro etc.
 const (
-	DefaultModel   = "gemini-1.5-flash"
+	DefaultModel   = "gemini-2.5-flash"
 	EmbeddingModel = "gemini-embedding-001"
 )
+
+var backoffMin = 1 * time.Second
+
 
 // Media is the input shape for identify — bytes plus a MIME type
 // so Gemini can decode without inspecting the payload.
@@ -61,11 +67,34 @@ type EmbedResult struct {
 	Tokens int
 }
 
+// FailoverApprover checks if a paid tier failover is approved for a specific operation.
+type FailoverApprover interface {
+	IsFailoverApproved(ctx context.Context, operation string) (bool, error)
+}
+
 // Client wraps a single HTTP client + model selection. Cheap to
 // construct, no goroutines, safe for concurrent use.
 type Client struct {
-	HTTP  *http.Client
-	Model string
+	HTTP             *http.Client
+	Model            string
+	BackoffMin       time.Duration
+	PaidKey          string
+	FailoverApprover FailoverApprover
+	Operation        string
+	exhausted        *exhaustedTracker
+}
+
+type exhaustedTracker struct {
+	mu     sync.RWMutex
+	models map[string]bool
+}
+
+func (c *Client) getBackoff(attempt int) time.Duration {
+	min := c.BackoffMin
+	if min == 0 {
+		min = backoffMin
+	}
+	return time.Duration(1<<attempt) * min
 }
 
 // New returns a Client with sensible defaults — a 60s overall HTTP
@@ -75,7 +104,18 @@ func New() *Client {
 	return &Client{
 		HTTP:  &http.Client{Timeout: 60 * time.Second},
 		Model: DefaultModel,
+		exhausted: &exhaustedTracker{
+			models: make(map[string]bool),
+		},
 	}
+}
+
+// WithFailover configures the client to fall back to a paid key if quota is exhausted.
+func (c *Client) WithFailover(paidKey string, approver FailoverApprover, operation string) *Client {
+	c.PaidKey = paidKey
+	c.FailoverApprover = approver
+	c.Operation = operation
+	return c
 }
 
 // EmbedContent generates a vector embedding for the given text.
@@ -103,29 +143,69 @@ func (c *Client) EmbedContent(ctx context.Context, apiKey string, text string) (
 		"https://generativelanguage.googleapis.com/v1beta/models/%s:embedContent?key=%s",
 		EmbeddingModel, apiKey,
 	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-	if err != nil {
-		return EmbedResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return EmbedResult{}, fmt.Errorf("gemini http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return EmbedResult{}, &HTTPError{
-			Status: resp.StatusCode,
-			Body:   truncate(string(respBody), 800),
-		}
-	}
-
+	var lastErr error
 	var decoded embedResponse
-	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return EmbedResult{}, fmt.Errorf("decoding response: %w", err)
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return EmbedResult{}, ctx.Err()
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+		if err != nil {
+			return EmbedResult{}, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("gemini http: %w", err)
+			if IsTransient(lastErr) && attempt < 2 {
+				backoff := c.getBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return EmbedResult{}, ctx.Err()
+				case <-time.After(backoff):
+					continue
+				}
+			}
+			break
+		}
+
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = &HTTPError{
+				Status: resp.StatusCode,
+				Body:   truncate(string(respBody), 800),
+			}
+			if isGlobalPermanentError(lastErr) {
+				return EmbedResult{}, lastErr
+			}
+			if IsTransient(lastErr) && attempt < 2 {
+				backoff := c.getBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return EmbedResult{}, ctx.Err()
+				case <-time.After(backoff):
+					continue
+				}
+			}
+			break
+		}
+
+		if err := json.Unmarshal(respBody, &decoded); err != nil {
+			lastErr = fmt.Errorf("decoding response: %w", err)
+			break // not transient
+		}
+
+		lastErr = nil
+		break // success
+	}
+
+	if lastErr != nil {
+		return EmbedResult{}, lastErr
 	}
 
 	res := EmbedResult{
@@ -136,6 +216,145 @@ func (c *Client) EmbedContent(ctx context.Context, apiKey string, text string) (
 		res.Tokens = decoded.Usage.TotalTokenCount
 	}
 	return res, nil
+}
+
+func (c *Client) executeGenerate(ctx context.Context, apiKey string, model string, buf []byte) (generateResponse, error) {
+	apiVersion := "v1"
+	if strings.Contains(model, "3.1") || strings.Contains(model, "2.0") || strings.Contains(model, "2.5") {
+		apiVersion = "v1beta"
+	}
+	url := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/%s/models/%s:generateContent?key=%s",
+		apiVersion, model, apiKey,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		return generateResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return generateResponse{}, fmt.Errorf("gemini http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return generateResponse{}, &HTTPError{
+			Status: resp.StatusCode,
+			Body:   truncate(string(respBody), 800),
+		}
+	}
+
+	var decoded generateResponse
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
+		return generateResponse{}, fmt.Errorf("decoding response: %w (head: %s)", err, truncate(string(respBody), 200))
+	}
+	return decoded, nil
+}
+
+func normalizeModelName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimPrefix(name, "models/")
+	if name == "gemini-3.1-flash" {
+		return "gemini-3.1-flash-lite"
+	}
+	return name
+}
+
+func normalizeModelNames(names []string) []string {
+	var normalized []string
+	for _, n := range names {
+		if norm := normalizeModelName(n); norm != "" {
+			normalized = append(normalized, norm)
+		}
+	}
+	return normalized
+}
+
+func (c *Client) primaryModel() string {
+	// Programmatic override takes highest priority
+	if c.Model != "" {
+		return c.Model
+	}
+	
+	// Operation-specific override
+	cfg := config.Get()
+	if c.Operation != "" {
+		if opCfg, exists := cfg.Operations[c.Operation]; exists && opCfg.PrimaryModel != "" {
+			return opCfg.PrimaryModel
+		}
+	}
+	
+	// Global primary model
+	if cfg.PrimaryModel != "" {
+		return cfg.PrimaryModel
+	}
+	
+	return DefaultModel
+}
+
+func (c *Client) fallbackModels() []string {
+	var models []string
+	
+	// Start with the resolved primary model
+	primary := c.primaryModel()
+	models = append(models, normalizeModelName(primary))
+	
+	// Find fallback list
+	var cfgModels []string
+	cfg := config.Get()
+	if c.Operation != "" {
+		if opCfg, exists := cfg.Operations[c.Operation]; exists && len(opCfg.AIModels) > 0 {
+			cfgModels = opCfg.AIModels
+		}
+	}
+	
+	if len(cfgModels) == 0 {
+		cfgModels = cfg.AIModels
+	}
+	
+	for _, m := range cfgModels {
+		norm := normalizeModelName(m)
+		if norm == "" {
+			continue
+		}
+		found := false
+		for _, existing := range models {
+			if existing == norm {
+				found = true
+				break
+			}
+		}
+		if !found {
+			models = append(models, norm)
+		}
+	}
+	
+	// Inject fallback chain for 2.5-pro and 2.5-flash models
+	var injected []string
+	for _, m := range models {
+		injected = append(injected, m)
+		if strings.Contains(m, "2.5-pro") || strings.Contains(m, "2.5-flash") {
+			injected = append(injected, "gemini-3.1-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash")
+		}
+	}
+	
+	// Deduplicate the final list
+	var finalModels []string
+	seen := make(map[string]bool)
+	for _, m := range injected {
+		if !seen[m] {
+			seen[m] = true
+			finalModels = append(finalModels, m)
+		}
+	}
+
+	if len(finalModels) == 0 {
+		finalModels = []string{DefaultModel}
+	}
+	return finalModels
 }
 
 // Identify sends one or more media items + a prompt to Gemini and
@@ -165,46 +384,137 @@ func (c *Client) Identify(ctx context.Context, apiKey string, media []Media, pro
 			},
 		})
 	}
-	body := generateRequest{Contents: []content{{Parts: parts}}}
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return IdentifyResult{}, fmt.Errorf("encoding request: %w", err)
+	models := c.fallbackModels()
+	var activeModels []string
+	if c.exhausted != nil {
+		c.exhausted.mu.RLock()
+		for _, m := range models {
+			if !c.exhausted.models[m] {
+				activeModels = append(activeModels, m)
+			}
+		}
+		c.exhausted.mu.RUnlock()
+	} else {
+		activeModels = models
+	}
+	if len(activeModels) == 0 {
+		activeModels = models
 	}
 
-	model := c.Model
-	if model == "" {
-		model = DefaultModel
-	}
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s",
-		model, apiKey,
-	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-	if err != nil {
-		return IdentifyResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	var decoded generateResponse
+	var finalModel string
 
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return IdentifyResult{}, fmt.Errorf("gemini http: %w", err)
-	}
-	defer resp.Body.Close()
+	for _, model := range activeModels {
+		if ctx.Err() != nil {
+			return IdentifyResult{}, ctx.Err()
+		}
 
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return IdentifyResult{}, &HTTPError{
-			Status: resp.StatusCode,
-			Body:   truncate(string(respBody), 800),
+		// Inject generationConfig specifically for 3.1 models
+		body := generateRequest{Contents: []content{{Parts: parts}}}
+		if strings.Contains(model, "3.1-pro") {
+			body.GenerationConfig = &generationConfig{
+				ThinkingConfig: &thinkingConfig{
+					ThinkingLevel: "MEDIUM",
+				},
+			}
+		}
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return IdentifyResult{}, fmt.Errorf("encoding request: %w", err)
+		}
+
+		for attempt := 0; attempt < 3; attempt++ {
+			if ctx.Err() != nil {
+				return IdentifyResult{}, ctx.Err()
+			}
+			decoded, lastErr = c.executeGenerate(ctx, apiKey, model, buf)
+			if lastErr != nil {
+				if isGlobalPermanentError(lastErr) {
+					if IsQuotaErr(lastErr) {
+						if c.exhausted != nil {
+							c.exhausted.mu.Lock()
+							c.exhausted.models[model] = true
+							c.exhausted.mu.Unlock()
+						}
+						if c.PaidKey != "" && c.FailoverApprover != nil {
+							op := c.Operation
+							if op == "" {
+								op = "identify"
+							}
+							approved, err := c.FailoverApprover.IsFailoverApproved(ctx, op)
+							if err == nil && approved {
+								primaryModel := models[0]
+								body := generateRequest{Contents: []content{{Parts: parts}}}
+								if strings.Contains(primaryModel, "3.1-pro") {
+									body.GenerationConfig = &generationConfig{
+										ThinkingConfig: &thinkingConfig{
+											ThinkingLevel: "MEDIUM",
+										},
+									}
+								}
+								paidBuf, err := json.Marshal(body)
+								if err == nil {
+									var paidErr error
+									decoded, paidErr = c.executeGenerate(ctx, c.PaidKey, primaryModel, paidBuf)
+									if paidErr == nil {
+										finalModel = primaryModel
+										lastErr = nil
+										break
+									} else {
+										lastErr = paidErr
+									}
+								}
+							} else {
+								return IdentifyResult{}, &ErrFailoverApprovalRequired{
+									Operation: op,
+								}
+							}
+						}
+					}
+					if lastErr != nil {
+						return IdentifyResult{}, lastErr
+					}
+				}
+				if IsTransient(lastErr) && attempt < 2 {
+					backoff := c.getBackoff(attempt)
+					select {
+					case <-ctx.Done():
+						return IdentifyResult{}, ctx.Err()
+					case <-time.After(backoff):
+						continue // Retry current model
+					}
+				}
+				break // Not transient or last attempt -> break retry loop, switch to next model
+			}
+
+			// Treat empty response content as transient error
+			if strings.TrimSpace(decoded.firstText()) == "" {
+				lastErr = fmt.Errorf("gemini generate: empty response (model may be overloaded or content was filtered)")
+				if attempt < 2 {
+					backoff := c.getBackoff(attempt)
+					select {
+					case <-ctx.Done():
+						return IdentifyResult{}, ctx.Err()
+					case <-time.After(backoff):
+						continue // Retry current model
+					}
+				}
+				break // Switch to next model
+			}
+
+			finalModel = model
+			break // Success
+		}
+		if lastErr == nil {
+			break // Success
 		}
 	}
-
-	var decoded generateResponse
-	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return IdentifyResult{}, fmt.Errorf("decoding response: %w (head: %s)", err, truncate(string(respBody), 200))
+	if lastErr != nil {
+		return IdentifyResult{}, fmt.Errorf("gemini identify failed after fallbacks: %w", lastErr)
 	}
 
-	result := IdentifyResult{Model: model}
+	result := IdentifyResult{Model: finalModel}
 	if decoded.UsageMetadata != nil {
 		result.PromptTokens = decoded.UsageMetadata.PromptTokenCount
 		result.CandidatesTokens = decoded.UsageMetadata.CandidatesTokenCount
@@ -212,10 +522,6 @@ func (c *Client) Identify(ctx context.Context, apiKey string, media []Media, pro
 	}
 
 	text := decoded.firstText()
-	if strings.TrimSpace(text) == "" {
-		return result, ErrEmptyResponse
-	}
-
 	parsed := Parse(text)
 	result.Title = parsed.Title
 	result.Notes = parsed.Notes
@@ -254,57 +560,142 @@ func (c *Client) Query(ctx context.Context, apiKey string, contextInfo string, m
 		})
 	}
 
-	body := generateRequest{Contents: []content{{Parts: parts}}}
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return QueryResult{}, fmt.Errorf("encoding request: %w", err)
+	models := c.fallbackModels()
+	var activeModels []string
+	if c.exhausted != nil {
+		c.exhausted.mu.RLock()
+		for _, m := range models {
+			if !c.exhausted.models[m] {
+				activeModels = append(activeModels, m)
+			}
+		}
+		c.exhausted.mu.RUnlock()
+	} else {
+		activeModels = models
+	}
+	if len(activeModels) == 0 {
+		activeModels = models
 	}
 
-	model := c.Model
-	if model == "" {
-		model = DefaultModel
-	}
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1/models/%s:generateContent?key=%s",
-		model, apiKey,
-	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-	if err != nil {
-		return QueryResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	var decoded generateResponse
+	var finalModel string
 
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return QueryResult{}, fmt.Errorf("gemini http: %w", err)
-	}
-	defer resp.Body.Close()
+	for _, model := range activeModels {
+		if ctx.Err() != nil {
+			return QueryResult{}, ctx.Err()
+		}
 
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return QueryResult{}, &HTTPError{
-			Status: resp.StatusCode,
-			Body:   truncate(string(respBody), 800),
+		// Inject generationConfig specifically for 3.1 models
+		body := generateRequest{Contents: []content{{Parts: parts}}}
+		if strings.Contains(model, "3.1-pro") {
+			body.GenerationConfig = &generationConfig{
+				ThinkingConfig: &thinkingConfig{
+					ThinkingLevel: "MEDIUM",
+				},
+			}
+		}
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return QueryResult{}, fmt.Errorf("encoding request: %w", err)
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			if ctx.Err() != nil {
+				return QueryResult{}, ctx.Err()
+			}
+			decoded, lastErr = c.executeGenerate(ctx, apiKey, model, buf)
+			if lastErr != nil {
+				if isGlobalPermanentError(lastErr) {
+					if IsQuotaErr(lastErr) {
+						if c.exhausted != nil {
+							c.exhausted.mu.Lock()
+							c.exhausted.models[model] = true
+							c.exhausted.mu.Unlock()
+						}
+						if c.PaidKey != "" && c.FailoverApprover != nil {
+							op := c.Operation
+							if op == "" {
+								op = "query"
+							}
+							approved, err := c.FailoverApprover.IsFailoverApproved(ctx, op)
+							if err == nil && approved {
+								primaryModel := models[0]
+								body := generateRequest{Contents: []content{{Parts: parts}}}
+								if strings.Contains(primaryModel, "3.1-pro") {
+									body.GenerationConfig = &generationConfig{
+										ThinkingConfig: &thinkingConfig{
+											ThinkingLevel: "MEDIUM",
+										},
+									}
+								}
+								paidBuf, err := json.Marshal(body)
+								if err == nil {
+									var paidErr error
+									decoded, paidErr = c.executeGenerate(ctx, c.PaidKey, primaryModel, paidBuf)
+									if paidErr == nil {
+										finalModel = primaryModel
+										lastErr = nil
+										break
+									} else {
+										lastErr = paidErr
+									}
+								}
+							} else {
+								return QueryResult{}, &ErrFailoverApprovalRequired{
+									Operation: op,
+								}
+							}
+						}
+					}
+					if lastErr != nil {
+						return QueryResult{}, lastErr
+					}
+				}
+				if IsTransient(lastErr) && attempt < 2 {
+					backoff := c.getBackoff(attempt)
+					select {
+					case <-ctx.Done():
+						return QueryResult{}, ctx.Err()
+					case <-time.After(backoff):
+						continue // Retry current model
+					}
+				}
+				break // Not transient or last attempt -> break retry loop, switch to next model
+			}
+
+			// Treat empty response content as transient error
+			if strings.TrimSpace(decoded.firstText()) == "" {
+				lastErr = fmt.Errorf("gemini query: empty response (model may be overloaded or content was filtered)")
+				if attempt < 2 {
+					backoff := c.getBackoff(attempt)
+					select {
+					case <-ctx.Done():
+						return QueryResult{}, ctx.Err()
+					case <-time.After(backoff):
+						continue // Retry current model
+					}
+				}
+				break // Switch to next model
+			}
+
+			finalModel = model
+			break // Success
+		}
+		if lastErr == nil {
+			break // Success
 		}
 	}
-
-	var decoded generateResponse
-	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return QueryResult{}, fmt.Errorf("decoding response: %w", err)
+	if lastErr != nil {
+		return QueryResult{}, fmt.Errorf("gemini query failed after fallbacks: %w", lastErr)
 	}
 
-	res := QueryResult{Model: model}
+	res := QueryResult{Model: finalModel}
 	if decoded.UsageMetadata != nil {
 		res.PromptTokens = decoded.UsageMetadata.PromptTokenCount
 		res.CandidatesTokens = decoded.UsageMetadata.CandidatesTokenCount
 	}
 
-	text := decoded.firstText()
-	if strings.TrimSpace(text) == "" {
-		return res, ErrEmptyResponse
-	}
-
-	res.Answer = text
+	res.Answer = decoded.firstText()
 	return res, nil
 }
 
@@ -344,8 +735,18 @@ type embedding struct {
 }
 
 type generateRequest struct {
-	Contents []content `json:"contents"`
+	Contents         []content         `json:"contents"`
+	GenerationConfig *generationConfig `json:"generationConfig,omitempty"`
 }
+
+type generationConfig struct {
+	ThinkingConfig *thinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type thinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+}
+
 
 type content struct {
 	Parts []part `json:"parts"`
@@ -404,3 +805,34 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+func isGlobalPermanentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrMissingKey) {
+		return true
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		status := httpErr.Status
+		body := strings.ToLower(httpErr.Body)
+		if status == 400 || status == 401 || status == 403 {
+			return true
+		}
+		if status == 429 {
+			if strings.Contains(body, "budget-exceeded") ||
+				strings.Contains(body, "budget exceeded") ||
+				strings.Contains(body, "quota") ||
+				strings.Contains(body, "free_tier") ||
+				strings.Contains(body, "free-tier") ||
+				strings.Contains(body, "billing") ||
+				strings.Contains(body, "exhausted") ||
+				strings.Contains(body, "exhaustion") {
+				return true
+			}
+		}
+	}
+	return false
+}
+

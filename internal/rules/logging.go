@@ -248,13 +248,20 @@ func FormatEffects(result Result) []string {
 	if t := result.Thumbnail; t != nil {
 		switch {
 		case t.From != "":
-			out = append(out, "thumb:"+truncate(t.From, 50))
+			out = append(out, "thumb:"+truncate(t.From, 40))
 		case t.Auto:
 			out = append(out, "thumb:auto")
 		}
-	}
-	return out
-}
+		}
+		if len(result.Execs) > 0 {
+		if len(result.Execs) == 1 {
+			out = append(out, "exec")
+		} else {
+			out = append(out, fmt.Sprintf("exec×%d", len(result.Execs)))
+		}
+		}
+		return out
+		}
 
 func truncate(s string, max int) string {
 	if len(s) <= max {

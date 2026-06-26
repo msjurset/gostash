@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/credentials"
 	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
+	"github.com/msjurset/gostash/internal/usage"
 )
 
 // UsageRecorder matches the one in identify/worker.go
@@ -61,10 +63,11 @@ type Worker struct {
 	gem   *gemini.Client
 	opts  Options
 
-	mu              sync.Mutex
-	attempts        map[string]int
-	lastRejectedKey string
-	lastKeyLogged   bool
+	mu                       sync.Mutex
+	attempts                 map[string]int
+	lastRejectedKey          string
+	lastKeyLogged            bool
+	lastBudgetExceededLogged bool
 }
 
 // New constructs a worker.
@@ -97,6 +100,21 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) tick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
+	}
+	if ledger, ok := w.opts.Recorder.(*usage.Ledger); ok && ledger != nil {
+		cfg := config.Get()
+		exceeded, err := ledger.IsBudgetExceeded(cfg.MaxDailyBudgetUSD, cfg.MaxMonthlyBudgetUSD)
+		if err == nil && exceeded {
+			if !w.lastBudgetExceededLogged {
+				w.opts.Logger.Printf("[embed] budget exceeded (daily limit: $%.2f, monthly limit: $%.2f) — worker idling until reset", cfg.MaxDailyBudgetUSD, cfg.MaxMonthlyBudgetUSD)
+				w.lastBudgetExceededLogged = true
+			}
+			return
+		}
+		if err == nil && !exceeded && w.lastBudgetExceededLogged {
+			w.opts.Logger.Printf("[embed] budget active again — worker resumed")
+			w.lastBudgetExceededLogged = false
+		}
 	}
 	key, err := credentials.Load(credentials.KeyGeminiAPIKey)
 	if err != nil {

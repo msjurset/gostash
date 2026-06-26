@@ -48,6 +48,10 @@ type Match struct {
 	PathGlob       string `yaml:"path_glob,omitempty" json:"path_glob,omitempty"`
 	Content        string `yaml:"content,omitempty" json:"content,omitempty"`
 	ContentRegex   string `yaml:"content_regex,omitempty" json:"content_regex,omitempty"`
+	HasTag         string `yaml:"has_tag,omitempty" json:"has_tag,omitempty"`
+	// IsArchived matches on item.Archived. nil = "don't care";
+	// true = "only archived"; false = "only unarchived".
+	IsArchived *bool `yaml:"is_archived,omitempty" json:"is_archived,omitempty"`
 	// IsDuplicate matches on the capture-time duplicate-detection
 	// result supplied via Context. nil = "don't care" (current
 	// behavior); true = "only fire if this item is a dup of an
@@ -95,6 +99,7 @@ type Action struct {
 	Notify        string         `yaml:"notify,omitempty" json:"notify,omitempty"`
 	LinkTo        *LinkSpec      `yaml:"link_to,omitempty" json:"link_to,omitempty"`
 	SetThumbnail  *ThumbnailSpec `yaml:"set_thumbnail,omitempty" json:"set_thumbnail,omitempty"`
+	Exec          string         `yaml:"exec,omitempty" json:"exec,omitempty"`
 }
 
 // LinkSpec selects link targets. Exactly one of Tag / ID should be set;
@@ -246,7 +251,8 @@ type Result struct {
 	Notifies     []string
 	Links        []LinkSpec
 	Thumbnail    *ThumbnailSpec // first-match-wins
-	MatchedRules []string
+	Execs        []string
+	MatchedRules []string       // list of rules that matched
 	Errors       []error
 }
 
@@ -426,7 +432,16 @@ func (rs *Ruleset) ApplyWithContext(item *model.Item, ctx Context) Result {
 				}
 				res.Thumbnail = &spec
 			}
+			if act.Exec != "" {
+				rendered, terr := renderTemplate(act.Exec, td)
+				if terr != nil {
+					res.Errors = append(res.Errors, fmt.Errorf("rule %q exec: %w", rule.Name, terr))
+				} else if rendered != "" {
+					res.Execs = append(res.Execs, rendered)
+				}
+			}
 		}
+
 		// `stop_after_match` short-circuits: subsequent rules in the
 		// priority order are skipped. Effects accumulated so far stay
 		// in `res`; this only changes whether we KEEP evaluating.
@@ -456,6 +471,12 @@ func (r *Rule) matches(item *model.Item, ctx Context) (bool, map[string]string, 
 
 	if m.IsDuplicate != nil {
 		if *m.IsDuplicate != ctx.IsDuplicate {
+			return false, nil, nil
+		}
+	}
+
+	if m.IsArchived != nil {
+		if *m.IsArchived != item.Archived {
 			return false, nil, nil
 		}
 	}
@@ -551,6 +572,12 @@ func (r *Rule) matches(item *model.Item, ctx Context) (bool, map[string]string, 
 			return false, nil, nil
 		}
 		captures = collectCaptures(captures, re, match)
+	}
+
+	if m.HasTag != "" {
+		if !item.HasTag(m.HasTag) {
+			return false, nil, nil
+		}
 	}
 
 	if m == (Match{}) {

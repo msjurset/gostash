@@ -60,11 +60,13 @@ func IsTransient(err error) bool {
 		case 503:
 			return true
 		case 429:
-			// Quota markers — permanent within the current
+			// Quota/budget markers — permanent within the current
 			// window; do NOT retry.
 			if strings.Contains(body, "quota") ||
 				strings.Contains(body, "free_tier") ||
-				strings.Contains(body, "billing") {
+				strings.Contains(body, "billing") ||
+				strings.Contains(body, "budget-exceeded") ||
+				strings.Contains(body, "budget exceeded") {
 				return false
 			}
 			// Plain rate limit — retry.
@@ -116,3 +118,40 @@ func IsKeyRejected(err error) bool {
 	}
 	return false
 }
+
+// IsQuotaErr checks if the error is due to daily/free-tier/billing quota exhaustion.
+func IsQuotaErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		status := httpErr.Status
+		body := strings.ToLower(httpErr.Body)
+		if status == 429 {
+			if strings.Contains(body, "budget-exceeded") ||
+				strings.Contains(body, "budget exceeded") ||
+				strings.Contains(body, "quota") ||
+				strings.Contains(body, "free_tier") ||
+				strings.Contains(body, "free-tier") ||
+				strings.Contains(body, "billing") ||
+				strings.Contains(body, "exhausted") ||
+				strings.Contains(body, "exhaustion") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ErrFailoverApprovalRequired is returned when the free tier exhausts
+// and a paid key is available but not yet approved for the current session.
+type ErrFailoverApprovalRequired struct {
+	Operation     string
+	EstimatedCost string
+}
+
+func (e *ErrFailoverApprovalRequired) Error() string {
+	return "paid tier failover approval required for " + e.Operation
+}
+

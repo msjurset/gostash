@@ -362,3 +362,13 @@ func (item *Item) Language() string {
 	}
 	return ""
 }
+
+// UsageLog represents a single offline model execution log synced from client.
+type UsageLog struct {
+	ID              string    `json:"id"`
+	Model           string    `json:"model"`
+	PromptTokens    int       `json:"prompt_tokens"`
+	CandidateTokens int       `json:"candidate_tokens"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+

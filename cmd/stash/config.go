@@ -52,6 +52,146 @@ var configExclusionsRemoveCmd = &cobra.Command{
 	RunE:  runConfigExclusionsRemove,
 }
 
+var configShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show current configuration as JSON",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := config.Get()
+		type ConfigResponse struct {
+			config.Config
+			PaidCredentialSet bool `json:"paid_credential_set"`
+		}
+		printJSON(ConfigResponse{
+			Config:            c,
+			PaidCredentialSet: c.PaidCredential != "",
+		})
+		return nil
+	},
+}
+
+var configSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set a configuration parameter",
+	Long: "Set a configuration parameter. Supported keys:\n" +
+		"  primary_model                (string)\n" +
+		"  ai_models                    (comma-separated model list)\n" +
+		"  max_daily_budget_usd         (number)\n" +
+		"  max_monthly_budget_usd       (number)\n" +
+		"  paid_tier_enabled            (true/false)\n" +
+		"  paid_credential              (string/op:// reference)\n" +
+		"  paid_approval_duration_hours (number)\n" +
+		"  max_video_duration_minutes   (number)\n\n" +
+		"Per-operation overrides (operations.<op>.<field>):\n" +
+		"  operations.<op>.primary_model\n" +
+		"  operations.<op>.ai_models\n" +
+		"  (where <op> is identify, search, chat, ask, transform)",
+	Args: cobra.ExactArgs(2),
+	RunE: runConfigSet,
+}
+
+func runConfigSet(cmd *cobra.Command, args []string) error {
+	key := strings.ToLower(strings.TrimSpace(args[0]))
+	val := strings.TrimSpace(args[1])
+
+	c := config.Get()
+	if strings.HasPrefix(key, "operations.") {
+		parts := strings.Split(key, ".")
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid operations key: %q (expected operations.<op>.<field>)", key)
+		}
+		opName := parts[1]
+		fieldName := parts[2]
+
+		switch opName {
+		case "identify", "search", "chat", "ask", "transform":
+		default:
+			return fmt.Errorf("unsupported operation name: %q (expected identify | search | chat | ask | transform)", opName)
+		}
+
+		if c.Operations == nil {
+			c.Operations = make(map[string]config.OperationConfig)
+		}
+		opCfg := c.Operations[opName]
+
+		switch fieldName {
+		case "primary_model":
+			opCfg.PrimaryModel = val
+		case "ai_models":
+			var models []string
+			for _, m := range strings.Split(val, ",") {
+				m = strings.TrimSpace(m)
+				if m != "" {
+					models = append(models, m)
+				}
+			}
+			opCfg.AIModels = models
+		default:
+			return fmt.Errorf("unsupported operation field: %q (expected primary_model | ai_models)", fieldName)
+		}
+		if opCfg.PrimaryModel == "" && len(opCfg.AIModels) == 0 {
+			delete(c.Operations, opName)
+		} else {
+			c.Operations[opName] = opCfg
+		}
+	} else {
+		switch key {
+		case "primary_model":
+			c.PrimaryModel = val
+		case "ai_models":
+			var models []string
+			for _, m := range strings.Split(val, ",") {
+				m = strings.TrimSpace(m)
+				if m != "" {
+					models = append(models, m)
+				}
+			}
+			c.AIModels = models
+		case "max_daily_budget_usd":
+			var d float64
+			if _, err := fmt.Sscanf(val, "%f", &d); err != nil {
+				return fmt.Errorf("invalid float value for max_daily_budget_usd: %q", val)
+			}
+			c.MaxDailyBudgetUSD = d
+		case "max_monthly_budget_usd":
+			var d float64
+			if _, err := fmt.Sscanf(val, "%f", &d); err != nil {
+				return fmt.Errorf("invalid float value for max_monthly_budget_usd: %q", val)
+			}
+			c.MaxMonthlyBudgetUSD = d
+		case "paid_tier_enabled":
+			c.PaidTierEnabled = (strings.ToLower(val) == "true" || val == "1")
+		case "paid_credential":
+			c.PaidCredential = val
+		case "paid_approval_duration_hours":
+			var h int
+			if _, err := fmt.Sscanf(val, "%d", &h); err != nil {
+				return fmt.Errorf("invalid int value for paid_approval_duration_hours: %q", val)
+			}
+			c.PaidApprovalDurationHours = h
+		case "max_video_duration_minutes":
+			var m int
+			if _, err := fmt.Sscanf(val, "%d", &m); err != nil {
+				return fmt.Errorf("invalid int value for max_video_duration_minutes: %q", val)
+			}
+			c.MaxVideoDurationMinutes = m
+		default:
+			return fmt.Errorf("unsupported configuration key: %q", key)
+		}
+	}
+
+	if err := config.Save(c); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	config.Reload()
+
+	if flagJSON {
+		printJSON(map[string]any{"ok": true, "key": key, "value": val})
+	} else {
+		fmt.Printf("Set %s to %s\n", key, val)
+	}
+	return nil
+}
+
 func init() {
 	configExclusionsAddCmd.Flags().String("match", "domain", "Match type: domain | regex")
 	configExclusionsAddCmd.Flags().String("behavior", "domain", "Behavior on match: domain | clear")
@@ -60,6 +200,8 @@ func init() {
 	configExclusionsCmd.AddCommand(configExclusionsAddCmd)
 	configExclusionsCmd.AddCommand(configExclusionsRemoveCmd)
 	configCmd.AddCommand(configExclusionsCmd)
+	configCmd.AddCommand(configShowCmd)
+	configCmd.AddCommand(configSetCmd)
 	rootCmd.AddCommand(configCmd)
 }
 

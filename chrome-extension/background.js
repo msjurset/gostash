@@ -150,7 +150,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         // still better than the URL token.
         response = await fetchAndStashBlob(info.srcUrl, {
           referer: tab.url,
-          linkSource: tab.url,
           title: await readImageAlt(tab.id, info.srcUrl) || tab.title,
         });
         break;

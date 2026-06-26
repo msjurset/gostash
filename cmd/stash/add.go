@@ -47,6 +47,7 @@ func init() {
 	addCmd.Flags().StringP("title", "t", "", "Title (auto-detected if omitted)")
 	addCmd.Flags().StringSliceP("tag", "T", nil, "Tags (repeatable)")
 	addCmd.Flags().StringP("note", "n", "", "Note to attach")
+	addCmd.Flags().StringP("caption", "C", "", "Caption (for images/videos)")
 	addCmd.Flags().StringP("collection", "c", "", "Add to collection")
 	addCmd.Flags().String("type", "", "Force type (url, snippet, file, image, email)")
 	addCmd.Flags().StringP("extracted-text", "e", "",
@@ -70,6 +71,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	title, _ := cmd.Flags().GetString("title")
 	tags, _ := cmd.Flags().GetStringSlice("tag")
 	note, _ := cmd.Flags().GetString("note")
+	caption, _ := cmd.Flags().GetString("caption")
 	collection, _ := cmd.Flags().GetString("collection")
 	forceType, _ := cmd.Flags().GetString("type")
 	extractedTextFlag, _ := cmd.Flags().GetString("extracted-text")
@@ -92,6 +94,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	item := &model.Item{
 		ID:        id,
 		Notes:     note,
+		Caption:   caption,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Metadata:  json.RawMessage("{}"),
@@ -110,7 +113,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	switch {
-	case source == "-" || isStdin():
+	case (source == "-" || isStdin()) && !exists(source) && !isURL(source):
 		if err := addSnippet(item, fs, source); err != nil {
 			LogCaptureError("stdin snippet", err.Error())
 			return err
@@ -562,6 +565,11 @@ func addDirectory(item *model.Item, fs interface{ Save(io.Reader) (string, int64
 	item.FileSize = size
 
 	return nil
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func isDir(path string) bool {

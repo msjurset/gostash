@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/model"
@@ -144,6 +145,37 @@ func FirePostSaveRuleEffects(ctx context.Context, s store.Store, item *model.Ite
 	if result.Thumbnail != nil {
 		applyThumbnailAction(s, item, *result.Thumbnail)
 	}
+	for _, cmd := range result.Execs {
+		runExecAction(item, cmd)
+	}
+}
+
+// runExecAction runs an arbitrary shell command asynchronously. It sets
+// standard outputs to os.Stderr for visibility without polluting JSON output.
+func runExecAction(item *model.Item, cmdString string) {
+	if cmdString == "" {
+		return
+	}
+	cmd := exec.Command("sh", "-c", cmdString)
+	// We want scripts to inherit the environment, so they can use 1Password CLI etc.
+	// We don't set stdin, and we redirect stdout/stderr to the main process's stderr
+	// so the user can debug if they run it interactively, but it doesn't break
+	// JSON outputs (like from chrome-extension capture).
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	
+	// Start the command asynchronously so the Stash CLI returns quickly
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: rules exec failed to start: %v\n", err)
+		return
+	}
+	
+	// We run Wait in a goroutine to reap the child process.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: rules exec %q failed: %v\n", cmdString, err)
+		}
+	}()
 }
 
 // applyThumbnailAction resolves a `set_thumbnail` rule action against

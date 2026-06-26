@@ -91,13 +91,10 @@ var rulesTestCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-
-		// Strip existing tags before evaluating so we see what each rule
-		// WOULD add. Apply otherwise dedupes against current tags and
-		// hides the fact that a rule matched if its tags are already on
-		// the item. For `test`, the user wants to see all matches.
+		// Do not strip tags before evaluating. Apply() dedupes against
+		// existing tags, so it naturally only returns what would be NEW.
+		// Stripping tags here would break rules that match on has_tag.
 		preview := *item
-		preview.Tags = nil
 		result := rs.Apply(&preview)
 
 		out := struct {
@@ -112,6 +109,7 @@ var rulesTestCmd = &cobra.Command{
 			WouldAppendNote    string       `json:"would_append_note,omitempty"`
 			WouldNotify        []string     `json:"would_notify,omitempty"`
 			WouldLink          []rules.LinkSpec `json:"would_link,omitempty"`
+			WouldExec          []string     `json:"would_exec,omitempty"`
 			WouldSkip          bool         `json:"would_skip"`
 			SkippedBy          string       `json:"skipped_by,omitempty"`
 			CurrentTags        []string     `json:"current_tags"`
@@ -128,6 +126,7 @@ var rulesTestCmd = &cobra.Command{
 			WouldAppendNote:    result.AppendedNote,
 			WouldNotify:        result.Notifies,
 			WouldLink:          result.Links,
+			WouldExec:          result.Execs,
 			WouldSkip:          result.Skipped,
 			SkippedBy:          result.SkippedBy,
 		}
@@ -248,7 +247,7 @@ collection, mirroring the 'stash add' precedence rule.`,
 			rs = &filtered
 		}
 
-		filter := model.ItemFilter{Tags: filterTags, Limit: 100000}
+		filter := model.ItemFilter{Tags: filterTags, Limit: 100000, IncludeArchived: true}
 		if filterType != "" {
 			filter.Type = model.ParseItemType(filterType)
 		}
@@ -399,6 +398,12 @@ func matchSummary(m rules.Match) string {
 	if m.ContentRegex != "" {
 		parts = append(parts, "content_regex="+m.ContentRegex)
 	}
+	if m.IsArchived != nil {
+		parts = append(parts, fmt.Sprintf("is_archived=%v", *m.IsArchived))
+	}
+	if m.IsDuplicate != nil {
+		parts = append(parts, fmt.Sprintf("is_duplicate=%v", *m.IsDuplicate))
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -535,7 +540,20 @@ func applySummary(items []model.Item, rs *rules.Ruleset, s store.Store, ctx cont
 			}
 		}
 
-		if change.AddedTags != nil || change.AddedCollection != "" || change.NewTitle != "" || change.NoteChanged {
+		if !dryRun {
+			for _, link := range result.Links {
+				applyLinkAction(ctx, s, full, link)
+			}
+			if result.Thumbnail != nil {
+				applyThumbnailAction(s, full, *result.Thumbnail)
+			}
+			for _, cmd := range result.Execs {
+				runExecAction(full, cmd)
+			}
+		}
+
+		if change.AddedTags != nil || change.AddedCollection != "" || change.NewTitle != "" || change.NoteChanged ||
+			len(result.Links) > 0 || result.Thumbnail != nil || len(result.Execs) > 0 {
 			sum.Changed++
 			sum.Changes = append(sum.Changes, change)
 			// Log the retro fire so the activity feed reflects the run.

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,8 +49,10 @@ type PerModelTotals struct {
 // daily-average / projection math on the client side.
 type Snapshot struct {
 	Today         PerModelTotals `json:"today"`
+	ThisMonth     PerModelTotals `json:"this_month,omitempty"`
 	AllTime       PerModelTotals `json:"all_time"`
 	Date          string         `json:"date"`
+	Month         string         `json:"month,omitempty"` // e.g. "2026-06"
 	FirstSeenDate string         `json:"first_seen_date,omitempty"`
 }
 
@@ -88,19 +91,14 @@ func (l *Ledger) Record(model string, promptTokens, candidatesTokens int) {
 	defer l.mu.Unlock()
 
 	snap, _ := l.loadLocked()
-	today := l.now().Format("2006-01-02")
-
-	// Date rollover — if the snapshot's date is stale, reset
-	// today's bucket but keep all-time.
-	if snap.Date != today {
-		snap.Today = PerModelTotals{ByModel: map[string]ModelBucket{}}
-		snap.Date = today
-	}
 	if snap.FirstSeenDate == "" {
-		snap.FirstSeenDate = today
+		snap.FirstSeenDate = snap.Date
 	}
 	if snap.Today.ByModel == nil {
 		snap.Today.ByModel = map[string]ModelBucket{}
+	}
+	if snap.ThisMonth.ByModel == nil {
+		snap.ThisMonth.ByModel = map[string]ModelBucket{}
 	}
 	if snap.AllTime.ByModel == nil {
 		snap.AllTime.ByModel = map[string]ModelBucket{}
@@ -115,13 +113,10 @@ func (l *Ledger) Record(model string, promptTokens, candidatesTokens int) {
 		return t
 	}
 	snap.Today = add(snap.Today, model, int64(promptTokens), int64(candidatesTokens))
+	snap.ThisMonth = add(snap.ThisMonth, model, int64(promptTokens), int64(candidatesTokens))
 	snap.AllTime = add(snap.AllTime, model, int64(promptTokens), int64(candidatesTokens))
 
 	if err := l.writeLocked(snap); err != nil {
-		// Best-effort — log but don't fail the identify path.
-		// Caller's worker handles the actual identify outcome;
-		// dropped usage is a visibility loss, not a correctness
-		// loss.
 		fmt.Fprintf(os.Stderr, "[usage] write %s: %v\n", l.path, err)
 	}
 }
@@ -140,9 +135,11 @@ func (l *Ledger) loadLocked() (Snapshot, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Snapshot{
-				Today:   PerModelTotals{ByModel: map[string]ModelBucket{}},
-				AllTime: PerModelTotals{ByModel: map[string]ModelBucket{}},
-				Date:    l.now().Format("2006-01-02"),
+				Today:     PerModelTotals{ByModel: map[string]ModelBucket{}},
+				ThisMonth: PerModelTotals{ByModel: map[string]ModelBucket{}},
+				AllTime:   PerModelTotals{ByModel: map[string]ModelBucket{}},
+				Date:      l.now().Format("2006-01-02"),
+				Month:     l.now().Format("2006-01"),
 			}, nil
 		}
 		return Snapshot{}, err
@@ -151,6 +148,33 @@ func (l *Ledger) loadLocked() (Snapshot, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return Snapshot{}, fmt.Errorf("decode %s: %w", l.path, err)
 	}
+
+	// Rollover checks during Load to prevent budget lockouts on day/month transition
+	today := l.now().Format("2006-01-02")
+	currentMonth := l.now().Format("2006-01")
+	changed := false
+
+	if snap.Date != today {
+		snap.Today = PerModelTotals{ByModel: map[string]ModelBucket{}}
+		snap.Date = today
+		changed = true
+	}
+	if snap.Month != currentMonth {
+		snap.ThisMonth = PerModelTotals{ByModel: map[string]ModelBucket{}}
+		snap.Month = currentMonth
+		changed = true
+	}
+	if snap.FirstSeenDate == "" {
+		snap.FirstSeenDate = today
+		changed = true
+	}
+
+	if changed {
+		if err := l.writeLocked(snap); err != nil {
+			fmt.Fprintf(os.Stderr, "[usage] rollover write %s: %v\n", l.path, err)
+		}
+	}
+
 	return snap, nil
 }
 
@@ -167,20 +191,125 @@ func (l *Ledger) writeLocked(snap Snapshot) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	cleanup := func() { os.Remove(tmpName) }
+
+	var closed bool
+	var success bool
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		if !success {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
 	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
-		cleanup()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		cleanup()
 		return err
 	}
+	closed = true
 	if err := tmp.Close(); err != nil {
-		cleanup()
 		return err
 	}
-	return os.Rename(tmpName, l.path)
+	if err := os.Rename(tmpName, l.path); err != nil {
+		return err
+	}
+	success = true
+	return nil
+}
+
+// Pricing models and budget-checking logic
+
+type ModelPricing struct {
+	InputPerMillion  float64 `json:"input_per_million"`
+	OutputPerMillion float64 `json:"output_per_million"`
+}
+
+type PricingCatalog struct {
+	DefaultModel string                  `json:"default_model"`
+	Models       map[string]ModelPricing `json:"models"`
+}
+
+const defaultPricingJSON = `{
+  "default_model": "gemini-2.5-flash",
+  "models": {
+    "gemini-2.5-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
+    "gemini-2.5-flash-lite": { "input_per_million": 0.10, "output_per_million": 0.40 },
+    "gemini-2.5-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 },
+    "gemini-3-flash":        { "input_per_million": 0.50, "output_per_million": 3.00 },
+    "gemini-3-pro":          { "input_per_million": 2.00, "output_per_million": 12.00 },
+    "gemini-3.1-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
+    "gemini-3.1-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 }
+  }
+}
+`
+
+func (l *Ledger) loadPricing() (PricingCatalog, error) {
+	pricingPath := filepath.Join(filepath.Dir(l.path), "gemini-pricing.json")
+	data, err := os.ReadFile(pricingPath)
+	var catalog PricingCatalog
+	if err == nil {
+		if err := json.Unmarshal(data, &catalog); err == nil {
+			return catalog, nil
+		}
+	}
+	// Fallback to default pricing JSON
+	if err := json.Unmarshal([]byte(defaultPricingJSON), &catalog); err == nil {
+		return catalog, nil
+	}
+	return PricingCatalog{}, fmt.Errorf("failed to load pricing catalog")
+}
+
+func (c PricingCatalog) GetPricingForModel(modelName string) ModelPricing {
+	modelName = strings.TrimPrefix(modelName, "models/")
+	if p, ok := c.Models[modelName]; ok {
+		return p
+	}
+	if p, ok := c.Models[c.DefaultModel]; ok {
+		return p
+	}
+	return ModelPricing{
+		InputPerMillion:  0.30,
+		OutputPerMillion: 2.50,
+	}
+}
+
+func (c PricingCatalog) CalculateCost(totals PerModelTotals) float64 {
+	var totalCost float64
+	for modelName, bucket := range totals.ByModel {
+		pricing := c.GetPricingForModel(modelName)
+		inputCost := (float64(bucket.InputTokens) * pricing.InputPerMillion) / 1000000.0
+		outputCost := (float64(bucket.OutputTokens) * pricing.OutputPerMillion) / 1000000.0
+		totalCost += inputCost + outputCost
+	}
+	return totalCost
+}
+
+func (l *Ledger) CheckBudget(maxDailyUSD, maxMonthlyUSD float64) (bool, bool, error) {
+	snap, err := l.Load()
+	if err != nil {
+		return false, false, err
+	}
+	catalog, err := l.loadPricing()
+	if err != nil {
+		return false, false, err
+	}
+
+	dailyCost := catalog.CalculateCost(snap.Today)
+	monthlyCost := catalog.CalculateCost(snap.ThisMonth)
+
+	dailyExceeded := maxDailyUSD > 0 && dailyCost >= maxDailyUSD
+	monthlyExceeded := maxMonthlyUSD > 0 && monthlyCost >= maxMonthlyUSD
+
+	return dailyExceeded, monthlyExceeded, nil
+}
+
+func (l *Ledger) IsBudgetExceeded(maxDailyUSD, maxMonthlyUSD float64) (bool, error) {
+	dailyExceeded, monthlyExceeded, err := l.CheckBudget(maxDailyUSD, maxMonthlyUSD)
+	if err != nil {
+		return false, err
+	}
+	return dailyExceeded || monthlyExceeded, nil
 }

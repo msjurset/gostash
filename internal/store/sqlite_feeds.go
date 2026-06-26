@@ -325,11 +325,9 @@ func (s *SQLiteStore) PickResurfaceItems(ctx context.Context, params ResurfacePa
 	// section but only the top-2-newest + bottom-1-oldest are shown
 	// there; older commitments that don't fit need Resurface to
 	// nag them back into view.
-	q := `
-SELECT i.id, i.type, i.title, i.url, i.notes,
-       i.source_path, i.store_path, i.content_hash, i.extracted_text,
-       i.mime_type, i.file_size, i.metadata, i.created_at, i.updated_at,
-       i.archived, i.thumbnail_path
+	cols := prefixColumns("i", itemColumns)
+	q := fmt.Sprintf(`
+SELECT %s
 FROM items i
 LEFT JOIN item_resurface_state rs ON rs.item_id = i.id
 WHERE i.archived = 0
@@ -343,7 +341,7 @@ ORDER BY (
   + (CASE WHEN EXISTS(SELECT 1 FROM item_links il WHERE il.item_id_from = i.id OR il.item_id_to = i.id) THEN 1 ELSE 0 END)
   - (CAST((? - julianday(i.created_at)) / 365 AS INTEGER))
 ) DESC, RANDOM()
-LIMIT ?`
+LIMIT ?`, cols)
 	nowJD := now.UTC().Format("2006-01-02 15:04:05")
 	args := []any{
 		idleCutoff.Format("2006-01-02 15:04:05"),

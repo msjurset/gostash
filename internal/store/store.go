@@ -165,4 +165,11 @@ type Store interface {
 
 	Checkpoint() error
 	Close() error
+
+	// AI Failover
+	ApproveFailover(ctx context.Context, operation string, expiresAt time.Time) error
+	IsFailoverApproved(ctx context.Context, operation string) (bool, error)
+
+	// Sync usage logs
+	RegisterUsageLogs(ctx context.Context, logs []model.UsageLog) ([]model.UsageLog, error)
 }

@@ -104,12 +104,13 @@ func TestIsTransient(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"empty response", ErrEmptyResponse, true},
+		{"empty response", ErrEmptyResponse, false},
 		{"missing key", ErrMissingKey, false},
 		{"503 unavailable", &HTTPError{Status: 503, Body: "model overloaded"}, true},
 		{"429 plain rate limit", &HTTPError{Status: 429, Body: "rate limit exceeded"}, true},
 		{"429 free-tier quota", &HTTPError{Status: 429, Body: "quota exceeded: free_tier_requests"}, false},
 		{"429 billing quota", &HTTPError{Status: 429, Body: "quota exceeded; please add billing"}, false},
+		{"429 budget-exceeded", &HTTPError{Status: 429, Body: "budget-exceeded"}, false},
 		{"401 unauthorized", &HTTPError{Status: 401, Body: "invalid key"}, false},
 		{"403 forbidden", &HTTPError{Status: 403, Body: "permission denied"}, false},
 		{"500 server error", &HTTPError{Status: 500, Body: "internal"}, true},

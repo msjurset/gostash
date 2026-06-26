@@ -27,7 +27,8 @@ const serviceName = "stash"
 // Well-known keychain item names. Centralized so the daemon and the
 // auth CLI agree on the same string without re-deriving it.
 const (
-	KeyGeminiAPIKey = "gemini-api-key"
+	KeyGeminiAPIKey     = "gemini-api-key"
+	KeyGeminiPaidAPIKey = "gemini-paid-api-key"
 )
 
 // Store saves a secret to the platform keychain under the given key.
@@ -91,3 +92,36 @@ func LoadOrResolve(key, opRef string) (string, error) {
 	}
 	return ResolveAndCache(key, opRef)
 }
+
+// IsOpRef returns true if the value is a 1Password reference (op:// prefix).
+func IsOpRef(val string) bool {
+	return strings.HasPrefix(val, "op://")
+}
+
+// ResolvePaidKey resolves the paid API key from the given paid credential reference.
+func ResolvePaidKey(paidCredential string) string {
+	paidCredential = strings.Trim(paidCredential, "\"'` ")
+	if paidCredential == "" {
+		return ""
+	}
+	var paidKey string
+	if IsOpRef(paidCredential) {
+		paidKey, _ = LoadOrResolve(KeyGeminiPaidAPIKey, paidCredential)
+	} else {
+		// Try loading from keychain using paidCredential as keychain key first
+		paidKey, _ = Load(paidCredential)
+		if paidKey == "" {
+			// If not found in keychain, try loading KeyGeminiPaidAPIKey
+			paidKey, _ = Load(KeyGeminiPaidAPIKey)
+		}
+	}
+	if IsOpRef(paidKey) {
+		paidKey, _ = ResolveOp(paidKey)
+	}
+	if paidKey == "" && !IsOpRef(paidCredential) {
+		paidKey = paidCredential
+	}
+	return paidKey
+}
+
+

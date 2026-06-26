@@ -43,3 +43,10 @@ func TestShouldReplaceTitle(t *testing.T) {
 		})
 	}
 }
+
+func TestGetVideoDuration(t *testing.T) {
+	_, err := getVideoDuration([]byte("not a valid video payload"))
+	if err == nil {
+		t.Error("expected error from getVideoDuration for invalid payload, got nil")
+	}
+}

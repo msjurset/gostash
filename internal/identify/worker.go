@@ -49,11 +49,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/msjurset/gostash/internal/config"
 	"github.com/msjurset/gostash/internal/credentials"
 	"github.com/msjurset/gostash/internal/filestore"
 	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/model"
 	"github.com/msjurset/gostash/internal/store"
+	"github.com/msjurset/gostash/internal/usage"
 )
 
 // Tag name applied by sortie / by anything else that wants the
@@ -97,6 +99,8 @@ type Options struct {
 	Recorder UsageRecorder
 	// Logger overrides log.Default(). Useful in tests.
 	Logger *log.Logger
+	// MaxVideoDurationMinutes limits the duration of videos processed by the worker. Default 30.
+	MaxVideoDurationMinutes int
 }
 
 func (o *Options) applyDefaults() {
@@ -118,6 +122,9 @@ func (o *Options) applyDefaults() {
 	if o.Logger == nil {
 		o.Logger = log.Default()
 	}
+	if o.MaxVideoDurationMinutes <= 0 {
+		o.MaxVideoDurationMinutes = 30
+	}
 }
 
 // Worker is the polling identify worker. Construct via New;
@@ -128,10 +135,11 @@ type Worker struct {
 	gem   *gemini.Client
 	opts  Options
 
-	mu             sync.Mutex
-	attempts       map[string]int
-	lastRejectedKey string
-	lastKeyLogged  bool
+	mu                       sync.Mutex
+	attempts                 map[string]int
+	lastRejectedKey          string
+	lastKeyLogged            bool
+	lastBudgetExceededLogged bool
 }
 
 // New constructs a worker. Caller owns the lifetimes of store /
@@ -174,11 +182,31 @@ func (w *Worker) tick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	if ledger, ok := w.opts.Recorder.(*usage.Ledger); ok && ledger != nil {
+		cfg := config.Get()
+		exceeded, err := ledger.IsBudgetExceeded(cfg.MaxDailyBudgetUSD, cfg.MaxMonthlyBudgetUSD)
+		if err == nil && exceeded {
+			if !w.lastBudgetExceededLogged {
+				w.opts.Logger.Printf("[identify] budget exceeded (daily limit: $%.2f, monthly limit: $%.2f) — worker idling until reset", cfg.MaxDailyBudgetUSD, cfg.MaxMonthlyBudgetUSD)
+				w.lastBudgetExceededLogged = true
+			}
+			return
+		}
+		if err == nil && !exceeded && w.lastBudgetExceededLogged {
+			w.opts.Logger.Printf("[identify] budget active again — worker resumed")
+			w.lastBudgetExceededLogged = false
+		}
+	}
 	key, err := credentials.Load(credentials.KeyGeminiAPIKey)
 	if err != nil {
 		w.opts.Logger.Printf("[identify] keychain load error: %v", err)
 		return
 	}
+
+	cfg := config.Get()
+	paidKey := credentials.ResolvePaidKey(cfg.PaidCredential)
+	w.gem.WithFailover(paidKey, w.store, "identify")
+
 	if key == "" {
 		if w.lastKeyLogged {
 			w.opts.Logger.Printf("[identify] no Gemini key cached — idling until `stash auth set-gemini` runs")
@@ -369,14 +397,15 @@ func (w *Worker) collectMedia(item *model.Item) ([]gemini.Media, error) {
 		}
 		mime := mimeOr(item.MimeType, "image/jpeg")
 		if strings.HasPrefix(mime, "video/") {
-			// Cost Control: skip videos longer than 30 minutes to prevent
-			// accidental massive bills. 30m is the plan's suggested limit.
+			// Cost Control: skip videos longer than maxDur to prevent
+			// accidental massive bills.
+			maxDur := time.Duration(w.opts.MaxVideoDurationMinutes) * time.Minute
 			dur, err := getVideoDuration(data)
-			if err == nil && dur > 30*time.Minute {
-				return nil, fmt.Errorf("video too long for AI identify (%v > 30m)", dur)
-			}
 			if err != nil {
-				w.opts.Logger.Printf("[identify] duration check failed for %s: %v", item.ID, err)
+				return nil, fmt.Errorf("getVideoDuration failed for video: %w", err)
+			}
+			if dur > maxDur {
+				return nil, fmt.Errorf("video too long for AI identify (%v > %v)", dur, maxDur)
 			}
 
 			if item.HasTag("identify-lite") {
@@ -420,8 +449,12 @@ func (w *Worker) collectMedia(item *model.Item) ([]gemini.Media, error) {
 		fMime := mimeOr(f.MimeType, "image/jpeg")
 		if strings.HasPrefix(fMime, "video/") {
 			// Duration check for attached files too
+			maxDur := time.Duration(w.opts.MaxVideoDurationMinutes) * time.Minute
 			dur, err := getVideoDuration(data)
-			if err == nil && dur > 30*time.Minute {
+			if err != nil {
+				return nil, fmt.Errorf("getVideoDuration failed for attached video: %w", err)
+			}
+			if dur > maxDur {
 				w.opts.Logger.Printf("[identify] skipping attached video %d on %s: too long (%v)", f.ID, item.ID, dur)
 				continue
 			}
@@ -462,17 +495,28 @@ func getVideoDuration(video []byte) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer os.Remove(tmpFile.Name())
+	tmpName := tmpFile.Name()
+
+	var closed bool
+	defer func() {
+		if !closed {
+			_ = tmpFile.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
 
 	if _, err := tmpFile.Write(video); err != nil {
 		return 0, err
 	}
-	tmpFile.Close()
+	closed = true
+	if err := tmpFile.Close(); err != nil {
+		return 0, err
+	}
 
 	// -v error: quiet
 	// -show_entries format=duration: only show duration
 	// -of default=noprint_wrappers=1:nokey=1: just the number
-	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tmpFile.Name())
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tmpName)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("ffprobe error: %v, out: %s", err, string(out))

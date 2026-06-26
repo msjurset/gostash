@@ -20,7 +20,7 @@ var rootCmd = &cobra.Command{
 	Use:     "stash",
 	Short:   "Personal knowledge vault",
 	Long:    "Capture, organize, and search anything — URLs, text snippets, files, images.",
-	Version: version,
+	Version: "dev-trace-99",
 	RunE:    runTUI,
 	// Don't dump the cobra Usage block when a RunE returns an error.
 	// In CLI usage cobra's default usage-on-error is helpful, but

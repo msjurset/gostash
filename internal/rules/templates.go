@@ -20,6 +20,7 @@ import (
 // `{{.Captures.fieldname}}`. If both regexes define the same name, the
 // content_regex value wins (it runs last).
 type TemplateData struct {
+	ID           string
 	Title        string
 	URL          string
 	Domain       string
@@ -32,6 +33,7 @@ type TemplateData struct {
 	Subject      string
 	Filename     string
 	Date         string
+	ExtractedText string
 	// DuplicateOf is the existing item's full ID when the engine
 	// detected a duplicate at capture time, otherwise empty. Use as
 	// `{{.DuplicateOf}}` in link_to / set_note actions.
@@ -51,6 +53,7 @@ type RuleContext struct {
 func buildTemplateData(item *model.Item, ruleName string, captures map[string]string) TemplateData {
 	from := emailSender(item)
 	td := TemplateData{
+		ID:           item.ID,
 		Title:        item.Title,
 		URL:          item.URL,
 		Domain:       urlHost(item.URL),
@@ -62,6 +65,7 @@ func buildTemplateData(item *model.Item, ruleName string, captures map[string]st
 		SenderDomain: senderDomain(from),
 		Subject:      emailSubject(item),
 		Date:         time.Now().UTC().Format("2006-01-02"),
+		ExtractedText: item.ExtractedText,
 		Captures:     captures,
 		Rule:         RuleContext{Name: ruleName},
 	}
@@ -86,7 +90,11 @@ func renderTemplate(tmpl string, data TemplateData) (string, error) {
 	if !strings.Contains(tmpl, "{{") {
 		return tmpl, nil
 	}
-	t, err := template.New("rules").Option("missingkey=zero").Parse(tmpl)
+	t, err := template.New("rules").Funcs(template.FuncMap{
+		"quote": func(s string) string {
+			return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+		},
+	}).Option("missingkey=zero").Parse(tmpl)
 	if err != nil {
 		return "", err
 	}

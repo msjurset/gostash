@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/msjurset/gostash/internal/config"
 )
 
 // requireBearer returns middleware that enforces the bearer token on
@@ -17,6 +19,29 @@ func requireBearer(token string, next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="stash"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requirePaidTier checks if the request is paid if config.Get().PaidTierEnabled is true.
+// Mismatches are rejected with HTTP 402 Payment Required and a JSON body.
+func (s *Server) requirePaidTier(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if config.Get().PaidTierEnabled {
+			paid := false
+			if s.IsPaidRequest != nil {
+				paid = s.IsPaidRequest(r)
+			} else {
+				paid = r.Header.Get("X-Stash-Paid") == "true" || r.Header.Get("X-Stash-Paid-Tier") == "true"
+			}
+			if !paid {
+				writeJSON(w, http.StatusPaymentRequired, map[string]string{
+					"error":   "payment_required",
+					"message": "This feature requires a premium subscription.",
+				})
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

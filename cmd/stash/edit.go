@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/msjurset/gostash/internal/usage"
 	"github.com/msjurset/gostash/internal/config"
 	"io"
+	"os"
 	"time"
 	"github.com/spf13/cobra"
 )
@@ -34,6 +36,7 @@ func init() {
 	editCmd.Flags().StringP("collection", "c", "", "Add to collection")
 	editCmd.Flags().String("location", "", "Set geolocation as 'lat,lon' (decimal degrees); sets source=manual")
 	editCmd.Flags().Bool("clear-location", false, "Remove the item's stored location")
+	editCmd.Flags().String("speaker-map", "", "Speaker ID map as JSON (e.g. '{\"1\":\"Mark\"}')")
 	editCmd.Flags().Bool("ask-ai", false, "Ask a follow-up question of the AI (use with --ask-question)")
 	editCmd.Flags().String("ask-question", "", "The follow-up question to ask the AI")
 	editCmd.Flags().Bool("unarchive", false, "Restore the item from the archive")
@@ -176,6 +179,14 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 		item.Location = loc
 	}
+	if cmd.Flags().Changed("speaker-map") {
+		raw, _ := cmd.Flags().GetString("speaker-map")
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return fmt.Errorf("--speaker-map: invalid JSON: %w", err)
+		}
+		item.SpeakerMap = m
+	}
 
 	if ask, _ := cmd.Flags().GetBool("ask-ai"); ask {
 		question, _ := cmd.Flags().GetString("ask-question")
@@ -257,6 +268,18 @@ func runEdit(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("add tag %q: %w", t, err)
 			}
 			logTagAudit(item, audit.ActionAdd, t, "edit")
+		}
+
+		// Trigger rules after tagging
+		full, err := s.GetItem(ctx, id)
+		if err == nil {
+			res := ApplyRulesToItem(s, full, RuleApplyContext{})
+			if res.Title != "" || res.HasNoteUpdate() {
+				if err := s.UpdateItem(ctx, full); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to update item from rules: %v\n", err)
+				}
+			}
+			FirePostSaveRuleEffects(ctx, s, full, res)
 		}
 	}
 

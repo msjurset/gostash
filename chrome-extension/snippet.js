@@ -14,15 +14,24 @@ const params = new URLSearchParams(location.search);
 const token = params.get("token");
 
 // Module state
+let mediaType = "text";
 let pageURL = "";
 let pageTitle = "";
 let selection = "";
+let srcUrl = "";
+let imageTitle = "";
 let pickedItem = null; // {id, title, type, url} when an existing item is selected
 let searchTimer = null;
 
 // DOM refs
 const pageInfoEl = document.getElementById("page-info");
 const selectionEl = document.getElementById("selection-text");
+const previewTitleEl = document.getElementById("preview-title");
+const previewImageContainer = document.getElementById("image-preview-container");
+const previewImageEl = document.getElementById("preview-image");
+const modeNewLabel = document.getElementById("mode-new-label");
+const modeAppendLabel = document.getElementById("mode-append-label");
+const pickedLabel = document.getElementById("picked-label");
 const newSection = document.getElementById("new-section");
 const appendSection = document.getElementById("append-section");
 const newTitleEl = document.getElementById("new-title");
@@ -36,35 +45,67 @@ const statusEl = document.getElementById("status");
 const stashBtn = document.getElementById("stash");
 const cancelBtn = document.getElementById("cancel");
 
-// Initialize: pull the staged payload, render the selection, kick
+// Initialize: pull the staged payload, render the selection/image, kick
 // off a tag/collection refresh for the New mode dropdown.
 (async function init() {
   if (!token) {
-    setStatus("Missing snippet token. Close this window and try again.", "error");
+    setStatus("Missing token. Close this window and try again.", "error");
     return;
   }
   const data = await chrome.storage.session.get(token);
   const stash = data[token];
   if (!stash) {
-    setStatus("Snippet payload not found. Re-trigger from the page.", "error");
+    setStatus("Payload not found. Re-trigger from the page.", "error");
     return;
   }
+  
+  mediaType = stash.mediaType || "text";
   pageURL = stash.pageURL || "";
   pageTitle = stash.pageTitle || "";
-  selection = stash.selection || "";
+
+  if (mediaType === "image") {
+    srcUrl = stash.srcUrl || "";
+    imageTitle = stash.imageTitle || "";
+
+    document.title = "Stash Image";
+    const headerH1 = document.querySelector("header h1");
+    if (headerH1) headerH1.textContent = "Stash Image";
+
+    if (previewTitleEl) previewTitleEl.textContent = "Image";
+    selectionEl.classList.add("hidden");
+    if (previewImageContainer) previewImageContainer.classList.remove("hidden");
+    if (previewImageEl) {
+      previewImageEl.src = srcUrl;
+      chrome.runtime.sendMessage({ type: "fetch_thumb", url: srcUrl }).then((resp) => {
+        if (resp && resp.ok && resp.dataURL) {
+          previewImageEl.src = resp.dataURL;
+        }
+      });
+    }
+
+    if (modeNewLabel) modeNewLabel.textContent = "Stash as a new image";
+    if (modeAppendLabel) modeAppendLabel.textContent = "Attach to an existing item";
+    if (pickedLabel) pickedLabel.textContent = "Will attach to:";
+
+    newTitleEl.value = imageTitle;
+    newTitleEl.placeholder = imageTitle
+      ? `(default: "${imageTitle}")`
+      : "(default: image filename)";
+  } else {
+    selection = stash.selection || "";
+    selectionEl.textContent = selection;
+    newTitleEl.placeholder = pageTitle
+      ? `(default: "${pageTitle}")`
+      : "(default: source page title)";
+  }
 
   pageInfoEl.textContent = pageTitle ? `${pageTitle} — ${pageURL}` : pageURL;
-  selectionEl.textContent = selection;
-  // Default title for New mode = page title; user can edit.
-  newTitleEl.placeholder = pageTitle
-    ? `(default: "${pageTitle}")`
-    : "(default: source page title)";
 
   await loadCollections();
   searchEl.focus();
-  // Pre-load recent items so the Append list is useful before
+  // Pre-load recent items so the Append/Attach list is useful before
   // the user types — covers the "I just stashed something,
-  // append a note to it" flow.
+  // append/attach a note/file to it" flow.
   runSearch("");
 })();
 
@@ -218,44 +259,68 @@ stashBtn.addEventListener("click", async () => {
 });
 
 async function stashAsNew() {
-  const title = newTitleEl.value.trim() || pageTitle || "Selection";
+  const title = newTitleEl.value.trim() || (mediaType === "image" ? imageTitle : pageTitle) || (mediaType === "image" ? "Image" : "Selection");
   const tags = newTagsEl.value
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean);
   const collection = newCollectionEl.value;
 
-  const resp = await chrome.runtime.sendMessage({
-    type: "native",
-    payload: {
-      action: "stash_text",
-      text: selection,
+  let resp;
+  if (mediaType === "image") {
+    resp = await chrome.runtime.sendMessage({
+      type: "fetch_and_stash",
+      url: srcUrl,
+      referer: pageURL,
       title,
       tags,
       collection,
-      url: pageURL, // source attribution
-    },
-  });
+    });
+  } else {
+    resp = await chrome.runtime.sendMessage({
+      type: "native",
+      payload: {
+        action: "stash_text",
+        text: selection,
+        title,
+        tags,
+        collection,
+        url: pageURL, // source attribution
+      },
+    });
+  }
   if (!resp || !resp.ok) throw new Error(resp?.error || "unknown error");
-  setStatus("Stashed as new snippet. Closing…", "success");
+  setStatus(mediaType === "image" ? "Stashed as new image. Closing…" : "Stashed as new snippet. Closing…", "success");
   chrome.storage.session.remove(token);
   setTimeout(() => window.close(), 800);
 }
 
 async function stashAsAppend() {
   if (!pickedItem) throw new Error("Pick an item first");
-  const resp = await chrome.runtime.sendMessage({
-    type: "native",
-    payload: {
-      action: "append_notes",
+  let resp;
+  if (mediaType === "image") {
+    const caption = newTitleEl.value.trim() || imageTitle || "";
+    resp = await chrome.runtime.sendMessage({
+      type: "fetch_and_attach",
+      url: srcUrl,
       item_id: pickedItem.id,
-      text: selection,
-      source_url: pageURL,
-      source_title: pageTitle,
-    },
-  });
+      referer: pageURL,
+      title: caption,
+    });
+  } else {
+    resp = await chrome.runtime.sendMessage({
+      type: "native",
+      payload: {
+        action: "append_notes",
+        item_id: pickedItem.id,
+        text: selection,
+        source_url: pageURL,
+        source_title: pageTitle,
+      },
+    });
+  }
   if (!resp || !resp.ok) throw new Error(resp?.error || "unknown error");
-  setStatus(`Appended to "${pickedItem.title}". Closing…`, "success");
+  setStatus(mediaType === "image" ? `Attached to "${pickedItem.title}". Closing…` : `Appended to "${pickedItem.title}". Closing…`, "success");
   chrome.storage.session.remove(token);
   setTimeout(() => window.close(), 800);
 }

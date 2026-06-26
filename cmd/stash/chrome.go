@@ -170,6 +170,8 @@ func handleNativeRequest(ctx context.Context, s store.Store, fs *filestore.FileS
 		return handleAppendNotes(ctx, s, req)
 	case "stash_blob":
 		return handleStashBlob(s, fs, req)
+	case "attach_blob":
+		return handleAttachBlob(ctx, s, fs, req)
 	case "search_history_record":
 		return handleSearchHistoryRecord(ctx, s, req)
 	case "search_history_list":
@@ -800,3 +802,52 @@ func handleSearchHistoryList(ctx context.Context, s store.Store, req *nativeRequ
 	}
 	return &nativeResponse{OK: true, History: entries}
 }
+
+func handleAttachBlob(ctx context.Context, s store.Store, fs *filestore.FileStore, req *nativeRequest) *nativeResponse {
+	if req.ItemID == "" {
+		return &nativeResponse{Error: "item_id is required"}
+	}
+	if req.BlobBase64 == "" {
+		return &nativeResponse{Error: "blob_base64 is required"}
+	}
+	body, err := base64.StdEncoding.DecodeString(req.BlobBase64)
+	if err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("decode base64: %v", err)}
+	}
+
+	item, err := s.GetItem(ctx, req.ItemID)
+	if err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("find item: %v", err)}
+	}
+
+	hash, size, err := fs.Save(bytes.NewReader(body))
+	if err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("store blob: %v", err)}
+	}
+
+	mime := req.BlobMIME
+	if mime == "" || mime == "application/octet-stream" || mime == "text/plain" {
+		mime = extract.DetectMIME(body, basenameFromURL(req.URL))
+	}
+
+	caption := req.Title
+	if caption == "" && req.URL != "" {
+		caption = basenameFromURL(req.URL)
+	}
+
+	file := &model.ItemFile{
+		ItemID:      item.ID,
+		StorePath:   hash,
+		ContentHash: hash,
+		MimeType:    mime,
+		FileSize:    size,
+		Caption:     caption,
+	}
+
+	if err := s.AttachItemFile(ctx, file); err != nil {
+		return &nativeResponse{Error: fmt.Sprintf("attach file: %v", err)}
+	}
+
+	return &nativeResponse{OK: true, Item: item}
+}
+

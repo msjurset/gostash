@@ -13,18 +13,21 @@
 
   <main>
     <section class="preview">
-      <div class="preview-label">Selection</div>
+      <div id="preview-title" class="preview-label">Selection</div>
       <blockquote id="selection-text"></blockquote>
+      <div id="image-preview-container" class="image-preview-container hidden">
+        <img id="preview-image" src="" alt="Stash Image Preview">
+      </div>
     </section>
 
     <section class="mode">
       <label class="mode-radio">
         <input type="radio" name="mode" value="new" checked>
-        <span>Stash as a new snippet</span>
+        <span id="mode-new-label">Stash as a new snippet</span>
       </label>
       <label class="mode-radio">
         <input type="radio" name="mode" value="append">
-        <span>Append to an existing item</span>
+        <span id="mode-append-label">Append to an existing item</span>
       </label>
     </section>
 
@@ -54,7 +57,7 @@
       </div>
       <ul id="search-results"></ul>
       <div id="picked-item" class="picked hidden">
-        <span class="picked-label">Will append to:</span>
+        <span id="picked-label" class="picked-label">Will append to:</span>
         <span class="picked-title"></span>
       </div>
     </section>

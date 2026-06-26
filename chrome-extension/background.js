@@ -133,26 +133,29 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         // convert it to Markdown so the stashed snippet preserves
         // structure (lists, paragraphs, bold/italic, links).
         const markdown = await getSelectionAsMarkdown(tab.id) || info.selectionText;
-        await openSnippetDialog(tab, markdown);
+        await openSnippetDialog(tab, {
+          mediaType: "text",
+          pageURL: tab.url,
+          pageTitle: tab.title,
+          selection: markdown || "",
+        });
         return;
       case "stash-image":
-        // Fetch the image bytes from the EXTENSION context — the
-        // service worker has host permissions for any URL and can
-        // attach the user's session cookies, which is the only way
-        // auth-gated CDN URLs (Gemini chat attachments, signed
-        // GDrive previews, etc.) return a 200 instead of 403. We
-        // ship the bytes through native messaging via stash_blob
-        // rather than asking the native host to do its own HTTP
-        // fetch (which has no cookie context).
+        // Open the snippet/image picker to let the user choose between
+        // stashing as a new image or attaching to an existing item.
         //
         // Title: try to read the <img>'s alt text via a content-
         // script injection. Falls back to the page title which is
         // still better than the URL token.
-        response = await fetchAndStashBlob(info.srcUrl, {
-          referer: tab.url,
-          title: await readImageAlt(tab.id, info.srcUrl) || tab.title,
+        const imageAlt = await readImageAlt(tab.id, info.srcUrl) || tab.title;
+        await openSnippetDialog(tab, {
+          mediaType: "image",
+          pageURL: tab.url,
+          pageTitle: tab.title,
+          srcUrl: info.srcUrl,
+          imageTitle: imageAlt,
         });
-        break;
+        return;
       case "stash-files-from-page":
         // Open the picker UI in a popup window. background.js does
         // the actual fetch_url_list / pick calls; the picker.html
@@ -394,18 +397,13 @@ function selectionToMarkdownInPage() {
   return md;
 }
 
-// openSnippetDialog stages the selection + page context in
-// chrome.storage.session, then opens snippet.html in a popup
-// window. snippet.js reads the token from the URL and pulls the
-// payload on load.
-async function openSnippetDialog(tab, selection) {
+// openSnippetDialog stages the payload in chrome.storage.session,
+// then opens snippet.html in a popup window. snippet.js reads the
+// token from the URL and pulls the payload on load.
+async function openSnippetDialog(tab, payload) {
   const token = "snippet-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
   await chrome.storage.session.set({
-    [token]: {
-      pageURL: tab.url,
-      pageTitle: tab.title,
-      selection: selection || "",
-    },
+    [token]: payload,
   });
   await chrome.windows.create({
     url: chrome.runtime.getURL("snippet.html") + "?token=" + token,
@@ -831,6 +829,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
+  if (message.type === "fetch_and_attach") {
+    fetchAndAttachBlob(message.url, message.item_id, {
+      referer: message.referer,
+      title: message.title,
+    })
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
   if (message.type === "fetch_thumb") {
     // Picker calls this per-image when rendering thumbnails. Routed
     // through the service worker (rather than fetching from the
@@ -902,6 +909,38 @@ async function fetchAndStashBlob(url, opts = {}) {
     title: opts.title || "",
   });
 }
+
+// fetchAndAttachBlob does the auth-aware download path, fetches from
+// extension service worker, encodes as base64, and sends attach_blob
+// action to the native host to attach the file to an existing item.
+async function fetchAndAttachBlob(url, itemId, opts = {}) {
+  const headers = {};
+  if (opts.referer) {
+    headers["Referer"] = opts.referer;
+  }
+  let res;
+  try {
+    res = await fetch(url, { credentials: "include", headers });
+  } catch (err) {
+    return { ok: false, error: "fetch: " + err.message };
+  }
+  if (!res.ok) {
+    return { ok: false, error: "HTTP " + res.status };
+  }
+  const buf = await res.arrayBuffer();
+  const base64 = arrayBufferToBase64(buf);
+  const mime = res.headers.get("Content-Type") || "application/octet-stream";
+
+  return sendNativeMessage({
+    action: "attach_blob",
+    url,
+    item_id: itemId,
+    blob_base64: base64,
+    blob_mime: mime,
+    title: opts.title || "", // Optional caption
+  });
+}
+
 
 // readImageAlt looks up the <img> with the given src and returns
 // its alt attribute. Used by "Stash This Image" so the stashed

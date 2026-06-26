@@ -209,3 +209,22 @@ footer button.primary:disabled {
   color: #888;
   cursor: not-allowed;
 }
+
+.image-preview-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #2c2c2e;
+  border-radius: 4px;
+  max-height: 120px;
+  overflow: hidden;
+  padding: 6px;
+}
+.image-preview-container.hidden { display: none; }
+#preview-image {
+  max-height: 108px;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 2px;
+}
+

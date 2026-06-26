@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/msjurset/gostash/internal/extract"
 	"github.com/msjurset/gostash/internal/model"
 
 	"github.com/spf13/cobra"
@@ -112,5 +112,5 @@ func sniffMIME(path string) (string, error) {
 	defer f.Close()
 	head := make([]byte, 512)
 	n, _ := f.Read(head)
-	return http.DetectContentType(head[:n]), nil
+	return extract.DetectMIME(head[:n], filepath.Base(path)), nil
 }

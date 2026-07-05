@@ -167,8 +167,18 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       showBadge(tab.id, "\u2713", "#4CAF50");
     }
   } catch (err) {
-    showBadge(tab.id, "!", "#F44336");
+    showBadge(tab?.id, "!", "#F44336");
     console.error("Stash context menu error:", err);
+    if (chrome.notifications) {
+      const errorMsg = err.stack || err.message || String(err);
+      chrome.notifications.create(`stash-err-${Date.now()}`, {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: "Stash Extension Error",
+        message: errorMsg.slice(0, 200), // message length limit
+        priority: 2,
+      });
+    }
   }
 });
 

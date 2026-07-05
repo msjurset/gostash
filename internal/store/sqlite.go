@@ -827,8 +827,12 @@ func (s *SQLiteStore) SearchItems(ctx context.Context, filter model.ItemFilter) 
 	args = append(args, tagArgs...)
 
 	if filter.Type != "" {
-		where = append(where, "i.type = ?")
-		args = append(args, filter.Type)
+		if filter.Type == "audio" {
+			where = append(where, "(i.type = 'file' AND i.mime_type LIKE 'audio/%')")
+		} else {
+			where = append(where, "i.type = ?")
+			args = append(args, filter.Type)
+		}
 	}
 	if filter.Untagged {
 		where = append(where, "NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id)")
@@ -1709,8 +1713,12 @@ func (s *SQLiteStore) buildListQuery(filter model.ItemFilter) (string, []any) {
 	var args []any
 
 	if filter.Type != "" {
-		where = append(where, "i.type = ?")
-		args = append(args, filter.Type)
+		if filter.Type == "audio" {
+			where = append(where, "(i.type = 'file' AND i.mime_type LIKE 'audio/%')")
+		} else {
+			where = append(where, "i.type = ?")
+			args = append(args, filter.Type)
+		}
 	}
 	if filter.Untagged {
 		// Untagged short-circuits any include/exclude tag filters —

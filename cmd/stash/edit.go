@@ -13,6 +13,7 @@ import (
 	"github.com/msjurset/gostash/internal/gemini"
 	"github.com/msjurset/gostash/internal/usage"
 	"github.com/msjurset/gostash/internal/config"
+	"github.com/msjurset/gostash/internal/fetch"
 	"io"
 	"os"
 	"time"
@@ -200,7 +201,29 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 
 		gClient := gemini.New()
-		contextInfo := fmt.Sprintf("Title: %s\nNotes: %s", item.Title, item.Notes)
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Title: %s\n", item.Title))
+		if item.URL != "" {
+			b.WriteString(fmt.Sprintf("URL: %s\n", item.URL))
+		}
+		if item.Notes != "" {
+			b.WriteString(fmt.Sprintf("Notes: %s\n", item.Notes))
+		}
+		if item.ExtractedText != "" {
+			b.WriteString(fmt.Sprintf("Extracted Text: %s\n", item.ExtractedText))
+		}
+		
+		if item.URL != "" {
+			qLower := strings.ToLower(question)
+			if strings.Contains(qLower, "summar") || strings.Contains(qLower, "crawl") || strings.Contains(qLower, "company") || strings.Contains(qLower, "product") || strings.Contains(qLower, "what does") || strings.Contains(qLower, "who is") {
+				extra, err := fetch.CrawlRelatedContext(item.URL)
+				if err == nil && extra != "" {
+					b.WriteString(fmt.Sprintf("\n--- Additional Crawled Context ---\n%s\n", extra))
+				}
+			}
+		}
+		
+		contextInfo := b.String()
 		var media []gemini.Media
 
 		// Include primary media if any

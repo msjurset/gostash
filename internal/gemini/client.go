@@ -31,7 +31,7 @@ import (
 // via Client.Model if a fallback chain needs to route some calls
 // to Pro etc.
 const (
-	DefaultModel   = "gemini-2.5-flash"
+	DefaultModel   = "gemini-3.1-flash"
 	EmbeddingModel = "gemini-embedding-001"
 )
 
@@ -220,7 +220,7 @@ func (c *Client) EmbedContent(ctx context.Context, apiKey string, text string) (
 
 func (c *Client) executeGenerate(ctx context.Context, apiKey string, model string, buf []byte) (generateResponse, error) {
 	apiVersion := "v1"
-	if strings.Contains(model, "3.1") || strings.Contains(model, "2.0") || strings.Contains(model, "2.5") {
+	if strings.Contains(model, "3.1") || strings.Contains(model, "3.5") || strings.Contains(model, "2.0") || strings.Contains(model, "2.5") {
 		apiVersion = "v1beta"
 	}
 	url := fmt.Sprintf(
@@ -257,10 +257,14 @@ func (c *Client) executeGenerate(ctx context.Context, apiKey string, model strin
 func normalizeModelName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.TrimPrefix(name, "models/")
-	if name == "gemini-3.1-flash" {
+	switch name {
+	case "gemini-3.1-flash":
 		return "gemini-3.1-flash-lite"
+	case "gemini-3.1-pro":
+		return "gemini-3.1-pro-preview"
+	default:
+		return name
 	}
-	return name
 }
 
 func normalizeModelNames(names []string) []string {

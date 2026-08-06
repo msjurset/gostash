@@ -809,9 +809,14 @@ func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"paid_tier_enabled":      cfg.PaidTierEnabled,
-		"max_daily_budget_usd":   cfg.MaxDailyBudgetUSD,
-		"max_monthly_budget_usd": cfg.MaxMonthlyBudgetUSD,
+		"primary_model":                cfg.PrimaryModel,
+		"ai_models":                    cfg.AIModels,
+		"operations":                   cfg.Operations,
+		"paid_tier_enabled":            cfg.PaidTierEnabled,
+		"max_daily_budget_usd":         cfg.MaxDailyBudgetUSD,
+		"max_monthly_budget_usd":       cfg.MaxMonthlyBudgetUSD,
+		"max_video_duration_minutes":   cfg.MaxVideoDurationMinutes,
+		"paid_approval_duration_hours": cfg.PaidApprovalDurationHours,
 	})
 }
 
@@ -1106,7 +1111,7 @@ func truncateText(s string, max int) string {
 }
 
 const defaultPricingJSON = `{
-  "default_model": "gemini-2.5-flash",
+  "default_model": "gemini-3.1-flash",
   "models": {
     "gemini-2.5-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
     "gemini-2.5-flash-lite": { "input_per_million": 0.10, "output_per_million": 0.40 },
@@ -1114,7 +1119,9 @@ const defaultPricingJSON = `{
     "gemini-3-flash":        { "input_per_million": 0.50, "output_per_million": 3.00 },
     "gemini-3-pro":          { "input_per_million": 2.00, "output_per_million": 12.00 },
     "gemini-3.1-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 },
-    "gemini-3.1-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 }
+    "gemini-3.1-flash-lite": { "input_per_million": 0.10, "output_per_million": 0.40 },
+    "gemini-3.1-pro":        { "input_per_million": 1.25, "output_per_million": 10.00 },
+    "gemini-3.5-flash":      { "input_per_million": 0.30, "output_per_million": 2.50 }
   }
 }
 `

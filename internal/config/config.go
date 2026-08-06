@@ -137,10 +137,10 @@ func load() Config {
 	}
 
 	if c.PrimaryModel == "" {
-		c.PrimaryModel = "gemini-2.5-flash"
+		c.PrimaryModel = "gemini-3.1-flash"
 	}
 	if len(c.AIModels) == 0 {
-		c.AIModels = []string{"gemini-2.5-flash"}
+		c.AIModels = []string{"gemini-3.1-flash"}
 	}
 	if c.Operations == nil {
 		c.Operations = make(map[string]OperationConfig)

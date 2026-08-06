@@ -67,8 +67,8 @@ data_dir = "` + filepath.Join(tmp, "stash_data") + `"
 	Reload()
 	c := Get()
 
-	if len(c.AIModels) != 1 || c.AIModels[0] != "gemini-2.5-flash" {
-		t.Errorf("expected default AIModels [gemini-2.5-flash], got %v", c.AIModels)
+	if len(c.AIModels) != 1 || c.AIModels[0] != "gemini-3.1-flash" {
+		t.Errorf("expected default AIModels [gemini-3.1-flash], got %v", c.AIModels)
 	}
 	if c.MaxVideoDurationMinutes != 30 {
 		t.Errorf("expected default MaxVideoDurationMinutes 30, got %d", c.MaxVideoDurationMinutes)

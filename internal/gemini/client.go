@@ -31,7 +31,7 @@ import (
 // via Client.Model if a fallback chain needs to route some calls
 // to Pro etc.
 const (
-	DefaultModel   = "gemini-3.1-flash"
+	DefaultModel   = "gemini-3.5-flash"
 	EmbeddingModel = "gemini-embedding-001"
 )
 
@@ -259,7 +259,7 @@ func normalizeModelName(name string) string {
 	name = strings.TrimPrefix(name, "models/")
 	switch name {
 	case "gemini-3.1-flash":
-		return "gemini-3.1-flash-lite"
+		return "gemini-3.5-flash"
 	case "gemini-3.1-pro":
 		return "gemini-3.1-pro-preview"
 	default:

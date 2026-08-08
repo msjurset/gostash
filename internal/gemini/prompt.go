@@ -8,13 +8,19 @@ import "fmt"
 // here MUST land in stash-mac (AIProvider.swift) and droid_stash
 // (GeminiClient.kt) at the same time, or one platform's output
 // stops parsing.
-const DefaultIdentifyPrompt = `Identify the main subject in this photo.
+const DefaultIdentifyPrompt = `Identify the main subject or summarize the content of this media.
 
 Respond with exactly these three lines, no preamble, no markdown:
 
 TITLE: <common name; include scientific name in parentheses when applicable>
-NOTES: <natural prose, three to six sentences. Open by naming the subject in plain language — e.g. "This is the YYYY mushroom (Scientificus nameus), also known as XXXX..." or "This is the eastern bluebird (Sialia sialis), a small thrush native to..." Then cover, where relevant: notable visual characteristics; habitat, range, or season; edibility / toxicity / safety; species commonly confused with it; what specific features visible in this photo helped identify it; and any other interesting facts a curious naturalist would want to know. Be generous with detail — the user will trim what they don't want.>
-TRANSCRIPT: <if the photo contains readable text — printed, typed, OR handwritten (including cursive) — transcribe it verbatim here, preserving line breaks where they're meaningful. Cover the entire visible text, not just a sample. If the image contains no meaningful text (e.g. it's a flower, animal, landscape with no signs / labels / writing), write exactly NONE.>
+NOTES: <natural prose, three to six sentences. Open by naming the subject in plain language — e.g. "This is the YYYY mushroom (Scientificus nameus), also known as XXXX..." or "This is the eastern bluebird (Sialia sialis), a small thrush native to..." Then cover, where relevant: notable visual characteristics; habitat, range, or season; edibility / toxicity / safety; species commonly confused with it; what specific features visible in this photo helped identify it; and any other interesting facts a curious naturalist would want to know. Be generous with detail — the user will trim what they don't want.
+
+If the subject falls into any of the following categories, you MUST include this extra information within the NOTES section:
+- Mushroom: Include edibility information, preparation info, poison vs. toxic distinction, species commonly confused with it, key visual features in this photo, and health benefits (if edible).
+- Insect: Include environmental benefits, what feeds on it, what it feeds on, and whether it is poisonous/venomous.
+- Plant: Include edibility information, preparation info, poison vs. toxic distinction, species commonly confused with it, and health benefits (if edible).
+- Tree: Include statistics like typical height range, crown characteristics, etc.>
+TRANSCRIPT: <for audio or video, transcribe the speech verbatim here. For images, if the photo contains readable text — printed, typed, OR handwritten (including cursive) — transcribe it verbatim here, preserving line breaks where they're meaningful. Cover the entire visible text, not just a sample. If no speech or text is present, write exactly NONE.>
 
 If you can't identify confidently, write TITLE: Unknown and explain your best guess and the reasoning in NOTES.`
 
